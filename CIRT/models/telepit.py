@@ -1,19 +1,24 @@
 import os
-import sys
+import importlib.util
 from typing import List, Optional
 
 import torch
 import torch.nn as nn
 
 
-def _ensure_external_path(external_repo_root: str) -> None:
-    """Ensure the external TelePiT repo path is importable.
-
-    Args:
-        external_repo_root: Filesystem path to the TelePiT project root that contains `S2S/models/TelePiT.py`.
-    """
-    if external_repo_root and external_repo_root not in sys.path:
-        sys.path.append(external_repo_root)
+def _load_external_telepit(external_repo_root: str):
+    """Load TelePiT external module from an explicit file path to avoid name collisions."""
+    telepit_file = os.path.join(external_repo_root, "S2S", "models", "TelePiT.py")
+    if not os.path.isfile(telepit_file):
+        return None
+    spec = importlib.util.spec_from_file_location("external_telepit_module", telepit_file)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if not hasattr(module, "Model"):
+        return None
+    return module.Model
 
 
 class Model(nn.Module):
@@ -41,14 +46,15 @@ class Model(nn.Module):
     ) -> None:
         super().__init__()
 
-        # Make sure external TelePiT repo is importable
-        _ensure_external_path(external_repo_root)
+        # Try load external TelePiT; if unavailable, fall back to bundled internal implementation
+        ExternalTelePiT = _load_external_telepit(external_repo_root)
+        if ExternalTelePiT is None:
+            from .telepit_internal import Model as InternalTelePiT
+            Impl = InternalTelePiT
+        else:
+            Impl = ExternalTelePiT
 
-        # Import here after path setup to avoid import-time failures
-        from S2S.models.TelePiT import Model as ExternalTelePiT
-
-        # Instantiate external model with passed-through args
-        self._impl = ExternalTelePiT(
+        self._impl = Impl(
             img_size=img_size,
             input_size=input_size,
             output_size=output_size,

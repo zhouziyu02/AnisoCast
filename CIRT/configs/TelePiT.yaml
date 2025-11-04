@@ -17,6 +17,8 @@ model_args:
     wavelet_levels: 3
     drop_rate: 0.1
     attn_drop_rate: 0.1
+    # Optional: if set, try to load external TelePiT from this repo root; otherwise use built-in
+    # external_repo_root: '/abs/path/to/TelePiT'
 
 data_args:
     batch_size: 32
