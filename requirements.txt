@@ -26,4 +26,5 @@ torch_geometric
 jupyter
 gcsfs
 wandb
+torchdiffeq
 

@@ -96,6 +96,22 @@ class S2SBenchmarkModel(pl.LightningModule):
                 num_steps=num_steps,
             )
         
+        if 'TelePiT' == self.model_args['model_name']:
+            # Import TelePiT wrapper that loads external TelePiT implementation
+            from .telepit import Model as TelePiTModel
+            self.model = TelePiTModel(
+                input_size=input_size,
+                output_size=output_size,
+                img_size=self.model_args.get('img_size', [121, 240]),
+                embed_dim=self.model_args.get('embed_dim', 256),
+                depth=self.model_args.get('depth', 6),
+                num_heads=self.model_args.get('num_heads', 8),
+                mlp_ratio=self.model_args.get('mlp_ratio', 4.0),
+                wavelet_levels=self.model_args.get('wavelet_levels', 3),
+                drop_rate=self.model_args.get('drop_rate', 0.1),
+                attn_drop_rate=self.model_args.get('attn_drop_rate', 0.1),
+            )
+        
         self.loss = self.init_loss_fn()
         self.val_loss = criterion.RMSE()
             
