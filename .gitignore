@@ -1,0 +1,37 @@
+# 训练输出/数据/资产
+data/
+data_download/
+results/
+logs/
+**/lightning_logs/
+ai_models_processed/
+**/wandb/
+S2S/
+GraphS2S/
+ai-models-processed/
+foundationmodels/
+pangu_era5_2018/
+panguweather/
+graphcast_assets/
+pangu_assets/
+panguweather_assets/
+pw_20180101/
+pw_smoke/
+fourcastnetv2_assets/
+
+EIMP/
+# 大文件
+*.ckpt
+nohup.out
+.npy
+
+# Python bytecode
+**/__pycache__/
+*.py[co]
+
+# run results (large)
+results/
+
+# ✅ 保留 other 文件夹
+!/other/
+!/other/**
