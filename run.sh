@@ -85,6 +85,7 @@
 MODEL_TYPE=${1:-"EGNN"}
 USE_TENSORBOARD=${2:-"false"}
 NP=${NP:-8}                          # 本机 GPU 数；如 4 卡就 NP=4 bash run_lo_ddp.sh
+export NP                            # 传递给 train.py 读取
 MAIN=${MAIN:-"train.py"}             # 入口脚本
 EXTRA=${EXTRA:-""}                   # 额外透传参数（可选）
 
@@ -113,25 +114,30 @@ echo "🧩 GPUs (nproc_per_node): $NP"
 echo
 
 ########## 3) 组装命令 ##########
-BASE_CMD="python3 -u ${MAIN} --config_filepath \"$CONFIG_FILE\""
+COMMON_ARGS=(--config_filepath "$CONFIG_FILE" --devices "$NP" --accelerator gpu)
+if (( NP > 1 )); then
+  COMMON_ARGS+=(--strategy ddp_find_unused_parameters_true)
+fi
+
 if [[ "$USE_TENSORBOARD" == "true" ]]; then
-  BASE_CMD="$BASE_CMD --use_tensorboard"
+  COMMON_ARGS+=(--use_tensorboard)
   echo "📈 TensorBoard 将启用（可能略降性能）"
 else
   echo "⚡ 最大化性能：关闭 TensorBoard"
 fi
+
 if [[ -n "$EXTRA" ]]; then
-  BASE_CMD="$BASE_CMD $EXTRA"
+  # shellcheck disable=SC2206
+  COMMON_ARGS+=($EXTRA)
 fi
 
-# Lightning 能自己拉起子进程，但在很多环境下用 torchrun 更稳
-CMD="torchrun --standalone --nproc_per_node=${NP} $MAIN --config_filepath \"$CONFIG_FILE\""
-if [[ "$USE_TENSORBOARD" == "true" ]]; then
-  CMD="$CMD --use_tensorboard"
+if (( NP > 1 )); then
+  LAUNCH_CMD=(torchrun --standalone --nproc_per_node="${NP}" "$MAIN")
+else
+  LAUNCH_CMD=(python3 -u "$MAIN")
 fi
-if [[ -n "$EXTRA" ]]; then
-  CMD="$CMD $EXTRA"
-fi
+
+LAUNCH_CMD+=("${COMMON_ARGS[@]}")
 
 ########## 4) 打印关键信息并启动 ##########
 echo "== Effective env =="
@@ -143,8 +149,9 @@ PY
 echo
 
 echo "== Launch =="
-# 你也可以把下一行换回：eval "$BASE_CMD"
-eval "$BASE_CMD"
+printf ' %q' "${LAUNCH_CMD[@]}"
+echo
+"${LAUNCH_CMD[@]}"
 
 # 检查训练是否成功
 if [ $? -eq 0 ]; then
