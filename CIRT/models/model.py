@@ -111,6 +111,21 @@ class S2SBenchmarkModel(pl.LightningModule):
                 drop_rate=self.model_args.get('drop_rate', 0.1),
                 attn_drop_rate=self.model_args.get('attn_drop_rate', 0.1),
             )
+
+        if 'Transformer' == self.model_args['model_name']:
+            from .transformer import TransformerModel
+            self.model = TransformerModel(
+                input_size=input_size,
+                output_size=output_size,
+                img_size=self.model_args.get('img_size', [120, 240]),
+                patch_size=self.model_args.get('patch_size', 4),
+                embed_dim=self.model_args.get('embed_dim', 256),
+                num_heads=self.model_args.get('num_heads', 8),
+                num_encoder_layers=self.model_args.get('num_encoder_layers', 6),
+                dim_feedforward=self.model_args.get('dim_feedforward', 1024),
+                dropout=self.model_args.get('dropout', 0.1),
+                pred_len=self.model_args.get('pred_len', 2),
+            )
         
         self.loss = self.init_loss_fn()
         self.val_loss = criterion.RMSE()
@@ -208,8 +223,8 @@ class S2SBenchmarkModel(pl.LightningModule):
                 preds = self(x)
                 # No need to adjust shape, ClimODE directly outputs the correct shape
             else:
-                # Ensure ViT inputs match configured img_size (e.g., crop to 120x240)
-                if 'ViT' == self.model_args.get('model_name', ''):
+                # Ensure ViT/Transformer inputs match configured img_size (e.g., crop to 120x240)
+                if self.model_args.get('model_name', '') in ('ViT', 'Transformer'):
                     target_h, target_w = self.model_args.get('img_size', [120, 240])
                     x = x[:, :, :target_h, :target_w]
                 preds = self(x)
@@ -243,8 +258,8 @@ class S2SBenchmarkModel(pl.LightningModule):
                 preds = self(x)
                 # No need to adjust shape, ClimODE directly outputs the correct shape
             else:
-                # Ensure ViT inputs match configured img_size (e.g., crop to 120x240)
-                if 'ViT' == self.model_args.get('model_name', ''):
+                # Ensure ViT/Transformer inputs match configured img_size (e.g., crop to 120x240)
+                if self.model_args.get('model_name', '') in ('ViT', 'Transformer'):
                     target_h, target_w = self.model_args.get('img_size', [120, 240])
                     x = x[:, :, :target_h, :target_w]
                 preds = self(x)
@@ -275,8 +290,8 @@ class S2SBenchmarkModel(pl.LightningModule):
             preds = self(x)
             # No need to adjust shape, ClimODE directly outputs the correct shape
         else:
-            # Ensure ViT inputs match configured img_size (e.g., crop to 120x240)
-            if 'ViT' == self.model_args.get('model_name', ''):
+            # Ensure ViT/Transformer inputs match configured img_size (e.g., crop to 120x240)
+            if self.model_args.get('model_name', '') in ('ViT', 'Transformer'):
                 target_h, target_w = self.model_args.get('img_size', [120, 240])
                 x = x[:, :, :target_h, :target_w]
             preds = self(x)
@@ -405,8 +420,8 @@ class S2SBenchmarkModel(pl.LightningModule):
             preds = self(x)
             # No need to adjust shape, ClimODE directly outputs the correct shape
         else:
-            # Ensure ViT inputs match configured img_size (e.g., crop to 120x240)
-            if 'ViT' == self.model_args.get('model_name', ''):
+            # Ensure ViT/Transformer inputs match configured img_size (e.g., crop to 120x240)
+            if self.model_args.get('model_name', '') in ('ViT', 'Transformer'):
                 target_h, target_w = self.model_args.get('img_size', [120, 240])
                 x = x[:, :, :target_h, :target_w]
             preds = self(x)

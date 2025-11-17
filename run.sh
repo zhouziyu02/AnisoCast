@@ -90,10 +90,10 @@ EXTRA=${EXTRA:-""}                   # 额外透传参数（可选）
 
 # 校验模型名
 case "$MODEL_TYPE" in
-  CirT|ClimaX|ViT|ClimODE|EGNN|FNO|TelePiT) ;;
+  CirT|ClimaX|ViT|ClimODE|EGNN|FNO|TelePiT|Transformer) ;;
   *)
     echo "Error: Invalid model type '$MODEL_TYPE'"
-    echo "Usage: $0 [CirT|ClimaX|ViT|ClimODE|EGNN|FNO|TelePiT] [true|false]"
+    echo "Usage: $0 [CirT|ClimaX|ViT|ClimODE|EGNN|FNO|TelePiT|Transformer] [true|false]"
     exit 1
     ;;
 esac

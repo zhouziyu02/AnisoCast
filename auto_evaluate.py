@@ -140,7 +140,14 @@ def evaluate_fno(config_file, checkpoint_path):
     评估FNO模型（使用与CirT相同的评估脚本）
     """
     print("🎯 开始FNO模型评估...")
-    return evaluate_fno(config_file, checkpoint_path)
+    return evaluate_cirt(config_file, checkpoint_path)
+
+def evaluate_transformer(config_file, checkpoint_path):
+    """
+    评估Transformer模型（沿用CirT评估流程）
+    """
+    print("🎯 开始Transformer模型评估...")
+    return evaluate_cirt(config_file, checkpoint_path)
 
 def auto_evaluate(model_type, config_file, checkpoint_path=None):
     """
@@ -171,6 +178,7 @@ def auto_evaluate(model_type, config_file, checkpoint_path=None):
         'ViT': evaluate_vit,
         'EGNN': evaluate_egnn,
         'FNO': evaluate_fno,
+        'Transformer': evaluate_transformer,
     }
     
     if model_type not in evaluators:
@@ -193,7 +201,7 @@ def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='自动评估模型')
     parser.add_argument('--model_type', required=True, 
-                       choices=['CirT', 'ClimODE', 'ClimaX', 'ViT', 'EGNN', 'FNO'],
+                       choices=['CirT', 'ClimODE', 'ClimaX', 'ViT', 'EGNN', 'FNO', 'Transformer'],
                        help='模型类型')
     parser.add_argument('--config_file', required=True,
                        help='配置文件路径')
