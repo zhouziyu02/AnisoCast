@@ -2,7 +2,7 @@ model_args:
     model_name: 'Transformer'
     input_size: 63
     output_size: 63
-    learning_rate: 0.0005
+    learning_rate: 0.005
     num_workers: 8
     epochs: 20
     t_max: 500

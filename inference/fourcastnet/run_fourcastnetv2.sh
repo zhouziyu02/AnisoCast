@@ -4,7 +4,7 @@ export AI_MODELS_ASSETS="/mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/fourcastnetv
 
 
 # python -m ai_models \
-#    --download-assets --assets /mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/fourcastnetv2_assets fourcastnetv2-small --only-gpu
+#    --download-assets --assets /mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/assets/fourcastnetv2 fourcastnetv2-small --only-gpu
 
 # python -m ai_models \
 #   --download-assets \
@@ -17,11 +17,11 @@ export AI_MODELS_ASSETS="/mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/fourcastnetv
 
 
 
-python /mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/inference/fourcastnet/generate.py \
-  --input /mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/fourcastnetv2-small.grib \
-  --out_dir /mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/results/fourcastnet \
-  --idx_dir /mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/results/fourcastnet/.cfgrib_index \
-  --levels_hpa 1000,925,850,700,600,500,400,300,250
+# python /mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/inference/fourcastnet/generate.py \
+#   --input /mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/fourcastnetv2-small.grib \
+#   --out_dir /mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/results/fourcastnet \
+#   --idx_dir /mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/results/fourcastnet/.cfgrib_index \
+#   --levels_hpa 1000,925,850,700,600,500,400,300,250
 
 
 # $ pip install "cdsapi>=0.7.7"
