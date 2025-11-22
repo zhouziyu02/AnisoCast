@@ -93,10 +93,17 @@ class TianQuanWrapper(nn.Module):
         constants_dir = os.path.join(root_dir, "constants")
         os.makedirs(constants_dir, exist_ok=True)
         
-        # Initialize TianQuan model
+        # Initialize TianQuan model with 67 default_vars to match internal expectations
+        # The decoder expects len(default_vars) channels, so we use 67 vars
+        tianquan_default_vars = (
+            ['2m_temperature', '10m_wind_speed'] + 
+            [f"{var}_{level}" for var in ['geopotential', 'wind_speed', 'temperature', 'relative_humidity', 'specific_humidity'] 
+             for level in self.tianquan_levels_list]
+        )  # 67 vars
+        
         try:
             self.model = TianQuan(
-                default_vars=self.default_vars,
+                default_vars=tianquan_default_vars,  # Use 67 vars for internal structure
                 root_dir=root_dir,
                 img_size=img_size,
                 patch_size=patch_size,
@@ -112,7 +119,7 @@ class TianQuanWrapper(nn.Module):
             print("Initializing with simplified configuration...")
             # Try with minimal configuration
             self.model = TianQuan(
-                default_vars=self.default_vars,
+                default_vars=tianquan_default_vars,
                 root_dir=root_dir,
                 img_size=img_size,
                 patch_size=patch_size,
@@ -347,7 +354,8 @@ class TianQuanWrapper(nn.Module):
         """
         Create dummy inputs required by TianQuan from ziyu_cli format.
         
-        Maps CirT format (63 vars: 3 single + 6×10 pressure) to TianQuan format (67 vars: 2 surface + 5×13 pressure).
+        We need to map 63 channels to 67 channels for TianQuan's internal processing.
+        We'll do this by mapping CirT format to TianQuan format.
         
         Args:
             x: Input tensor [batch, 63, height, width]
@@ -360,7 +368,7 @@ class TianQuanWrapper(nn.Module):
         channels = x.shape[1]
         height, width = x.shape[2], x.shape[3]
         
-        # Map CirT format to TianQuan format
+        # Map CirT format (63 vars) to TianQuan format (67 vars)
         x_tianquan = self._map_cir_to_tianquan(x, device)  # [batch, 67, h, w]
         
         # Reshape x to [batch, time=1, vars, height, width]
