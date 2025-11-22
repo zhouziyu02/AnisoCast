@@ -110,8 +110,13 @@ class TianQuanWrapper(nn.Module):
             )
         
         # Generate latitude and longitude arrays
+        # Note: torch.linspace in PyTorch 2.x doesn't support endpoint parameter
+        # For longitude, we want 0 to 360 (exclusive), so we calculate manually
         self.lats = torch.linspace(-90, 90, img_size[0])
-        self.lons = torch.linspace(0, 360, img_size[1], endpoint=False)
+        # For longitude: create img_size[1] points from 0 to 360 (exclusive)
+        # This is equivalent to linspace(0, 360, img_size[1], endpoint=False)
+        step = 360.0 / img_size[1]
+        self.lons = torch.arange(0, 360, step, dtype=torch.float32)[:img_size[1]]
         
     def _create_dummy_inputs(self, x, device):
         """
