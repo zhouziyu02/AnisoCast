@@ -183,8 +183,12 @@
 # fi
 
 #!/bin/bash
+export NCCL_SOCKET_FAMILY=AF_INET
+unset NCCL_SOCKET_IFNAME   
 
-MODEL_TYPE=${1:-"EGNN"}
+
+
+MODEL_TYPE=${1:-"CirT"}
 USE_TENSORBOARD=${2:-"false"}
 NP=${NP:-8}                          # 本机 GPU 数；如 4 卡就 NP=4 bash run_lo_ddp.sh
 export NP                            # 传递给 train.py 读取

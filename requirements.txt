@@ -32,7 +32,13 @@
 # wandb
 # torchdiffeq
 
-
+lightning
+timm
+torch-geometric
+xarray
+numpy==1.26.1
+torchist
+xskillscore
 cdsapi==0.6.1
 cfgrib==0.9.10.4
 ecmwf_api_client==1.6.3

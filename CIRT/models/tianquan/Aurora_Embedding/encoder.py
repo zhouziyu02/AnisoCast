@@ -1,7 +1,7 @@
 """Copyright (c) Microsoft Corporation. Licensed under the MIT license."""
 
 from datetime import timedelta
-from turtle import st
+# from turtle import st
 from typing import Tuple, Union
 
 import torch
