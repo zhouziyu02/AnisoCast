@@ -127,6 +127,23 @@ class S2SBenchmarkModel(pl.LightningModule):
                 pred_len=self.model_args.get('pred_len', 2),
             )
         
+        if 'TianQuan' == self.model_args['model_name']:
+            from .tianquan import TianQuanWrapper
+            self.model = TianQuanWrapper(
+                input_size=input_size,
+                output_size=output_size,
+                img_size=tuple(self.model_args.get('img_size', [121, 240])),
+                patch_size=self.model_args.get('patch_size', 2),
+                embed_dim=self.model_args.get('embed_dim', 384),
+                decoder_depth=self.model_args.get('decoder_depth', 2),
+                num_heads=self.model_args.get('num_heads', 12),
+                mlp_ratio=self.model_args.get('mlp_ratio', 4.0),
+                drop_path=self.model_args.get('drop_path', 0.1),
+                drop_rate=self.model_args.get('drop_rate', 0.1),
+                root_dir=self.model_args.get('root_dir', './logs/TianQuan'),
+                default_vars=self.model_args.get('default_vars', None),
+            )
+        
         self.loss = self.init_loss_fn()
         self.val_loss = criterion.RMSE()
             
@@ -222,6 +239,14 @@ class S2SBenchmarkModel(pl.LightningModule):
                 # ClimODE outputs [batch, step, channels, height, width]
                 preds = self(x)
                 # No need to adjust shape, ClimODE directly outputs the correct shape
+            elif 'TianQuan' == self.model_args.get('model_name', ''):
+                # TianQuan outputs [batch, time, channels, height, width]
+                preds = self(x)
+                # Align target spatial dims to preds if necessary
+                if preds.dim() == 5:
+                    y = y[:, :, :, :preds.shape[3], :preds.shape[4]]
+                elif preds.dim() == 4 and y.dim() == 5:
+                    y = y[:, 0]
             else:
                 # Ensure ViT/Transformer inputs match configured img_size (e.g., crop to 120x240)
                 if self.model_args.get('model_name', '') in ('ViT', 'Transformer'):
@@ -257,6 +282,14 @@ class S2SBenchmarkModel(pl.LightningModule):
                 # ClimODE outputs [batch, step, channels, height, width]
                 preds = self(x)
                 # No need to adjust shape, ClimODE directly outputs the correct shape
+            elif 'TianQuan' == self.model_args.get('model_name', ''):
+                # TianQuan outputs [batch, time, channels, height, width]
+                preds = self(x)
+                # Align target spatial dims to preds if necessary
+                if preds.dim() == 5:
+                    y = y[:, :, :, :preds.shape[3], :preds.shape[4]]
+                elif preds.dim() == 4 and y.dim() == 5:
+                    y = y[:, 0]
             else:
                 # Ensure ViT/Transformer inputs match configured img_size (e.g., crop to 120x240)
                 if self.model_args.get('model_name', '') in ('ViT', 'Transformer'):
@@ -289,6 +322,14 @@ class S2SBenchmarkModel(pl.LightningModule):
             # ClimODE outputs [batch, step, channels, height, width]
             preds = self(x)
             # No need to adjust shape, ClimODE directly outputs the correct shape
+        elif 'TianQuan' == self.model_args.get('model_name', ''):
+            # TianQuan outputs [batch, time, channels, height, width]
+            preds = self(x)
+            # Align target spatial dims to preds if necessary
+            if preds.dim() == 5:
+                y = y[:, :, :, :preds.shape[3], :preds.shape[4]]
+            elif preds.dim() == 4 and y.dim() == 5:
+                y = y[:, 0]
         else:
             # Ensure ViT/Transformer inputs match configured img_size (e.g., crop to 120x240)
             if self.model_args.get('model_name', '') in ('ViT', 'Transformer'):
@@ -419,6 +460,14 @@ class S2SBenchmarkModel(pl.LightningModule):
             # ClimODE outputs [batch, step, channels, height, width]
             preds = self(x)
             # No need to adjust shape, ClimODE directly outputs the correct shape
+        elif 'TianQuan' == self.model_args.get('model_name', ''):
+            # TianQuan outputs [batch, time, channels, height, width]
+            preds = self(x)
+            # Align target spatial dims to preds if necessary
+            if preds.dim() == 5:
+                y = y[:, :, :, :preds.shape[3], :preds.shape[4]]
+            elif preds.dim() == 4 and y.dim() == 5:
+                y = y[:, 0]
         else:
             # Ensure ViT/Transformer inputs match configured img_size (e.g., crop to 120x240)
             if self.model_args.get('model_name', '') in ('ViT', 'Transformer'):

@@ -194,10 +194,10 @@ BACKGROUND=${BACKGROUND:-"true"}     # 是否后台运行（默认后台）
 
 # 校验模型名
 case "$MODEL_TYPE" in
-  CirT|ClimaX|ViT|ClimODE|EGNN|FNO|TelePiT|Transformer) ;;
+  CirT|ClimaX|ViT|ClimODE|EGNN|FNO|TelePiT|Transformer|TianQuan) ;;
   *)
     echo "Error: Invalid model type '$MODEL_TYPE'"
-    echo "Usage: $0 [CirT|ClimaX|ViT|ClimODE|EGNN|FNO|TelePiT|Transformer] [true|false]"
+    echo "Usage: $0 [CirT|ClimaX|ViT|ClimODE|EGNN|FNO|TelePiT|Transformer|TianQuan] [true|false]"
     exit 1
     ;;
 esac
