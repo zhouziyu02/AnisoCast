@@ -35,6 +35,15 @@ class S2SBenchmarkModel(pl.LightningModule):
         if 'CirT' == self.model_args['model_name']:
             self.model = CirT.Model(input_size=input_size)
 
+        if 'ours' == self.model_args['model_name']:
+            from .ours import Model as OursModel
+            self.model = OursModel(
+                input_size=input_size,
+                output_size=output_size,
+                pred_len=self.model_args.get('pred_len', 2),
+                hidden_dim=self.model_args.get('hidden_dim', 128),
+            )
+
         if 'egnn' in self.model_args['model_name'].lower():
             from .egnn import EGNN
             

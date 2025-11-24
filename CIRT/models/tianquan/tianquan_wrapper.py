@@ -3,7 +3,7 @@ TianQuan wrapper to adapt ziyu_cli interface
 """
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import numpy as np
 from typing import Optional
 
 # Import TianQuan model with fixed paths
@@ -57,7 +57,7 @@ class TianQuanWrapper(nn.Module):
             default_vars.extend(['10m_u_component_of_wind', '10m_v_component_of_wind', '2m_temperature'])
             # 6 pressure variables × 10 levels
             pressure_vars = ['geopotential', 'specific_humidity', 'temperature', 
-                             'u_component_of_wind', 'v_component_of_wind', 'vertical_velocity']
+                           'u_component_of_wind', 'v_component_of_wind', 'vertical_velocity']
             # CirT uses 10 pressure levels: [10, 50, 100, 200, 300, 500, 700, 850, 925, 1000]
             cir_levels = [10, 50, 100, 200, 300, 500, 700, 850, 925, 1000]
             for var in pressure_vars:
@@ -139,44 +139,7 @@ class TianQuanWrapper(nn.Module):
         # This is equivalent to linspace(0, 360, img_size[1], endpoint=False)
         step = 360.0 / img_size[1]
         self.lons = torch.arange(0, 360, step, dtype=torch.float32)[:img_size[1]]
-
-    # ----------- helper: level interpolation (torch, keeps grad) ----------- #
-
-    def _interpolate_levels(self, var_data: torch.Tensor, out_levels: int) -> torch.Tensor:
-        """
-        Interpolate along the 'level' dimension using torch (keeps gradients).
-        var_data: [B, L_in, H, W]
-        return: [B, out_levels, H, W]
-        """
-        B, L_in, H, W = var_data.shape
-        # treat level as "depth" dimension of a 3D volume
-        var = var_data.unsqueeze(1)  # [B, 1, L_in, H, W]
-        var_interp = F.interpolate(
-            var,
-            size=(out_levels, H, W),
-            mode="trilinear",
-            align_corners=True,
-        )  # [B, 1, out_levels, H, W]
-        return var_interp.squeeze(1)  # [B, out_levels, H, W]
-
-    def _interpolate_levels_back(self, var_data: torch.Tensor, out_levels: int) -> torch.Tensor:
-        """
-        Interpolate from 13 -> 10 levels using torch (keeps gradients).
-        var_data: [B, T, L_in, H, W]
-        return: [B, T, out_levels, H, W]
-        """
-        B, T, L_in, H, W = var_data.shape
-        var = var_data.reshape(B * T, 1, L_in, H, W)  # [B*T, 1, L_in, H, W]
-        var_interp = F.interpolate(
-            var,
-            size=(out_levels, H, W),
-            mode="trilinear",
-            align_corners=True,
-        )  # [B*T, 1, out_levels, H, W]
-        return var_interp.reshape(B, T, out_levels, H, W)
-
-    # ----------------- mapping CirT -> TianQuan ----------------- #
-
+        
     def _map_cir_to_tianquan(self, x, device):
         """
         Map CirT format (63 vars: 3 single + 6×10 pressure) to TianQuan format (67 vars: 2 surface + 5×13 pressure).
@@ -195,13 +158,8 @@ class TianQuanWrapper(nn.Module):
         pressure_vars = x[:, self.cir_single_vars:, :, :]  # [batch, 60, h, w]
         
         # Reshape pressure vars: [batch, 6 vars, 10 levels, h, w]
-        pressure_reshaped = pressure_vars.reshape(
-            batch_size,
-            self.cir_pressure_vars,
-            self.cir_pressure_levels,
-            height,
-            width,
-        )
+        pressure_reshaped = pressure_vars.reshape(batch_size, self.cir_pressure_vars, 
+                                                 self.cir_pressure_levels, height, width)
         
         # Map single level variables to TianQuan surface variables
         # CirT: [u10, v10, t2m] -> TianQuan: [t2m, wind_speed_10m]
@@ -226,11 +184,43 @@ class TianQuanWrapper(nn.Module):
         # Calculate wind_speed from u and v components
         wind_speed = torch.sqrt(u_component**2 + v_component**2 + 1e-8)  # [batch, 10, h, w]
         
-        # Interpolate from 10 levels to 13 levels for each variable (pure torch)
-        geopotential_13 = self._interpolate_levels(geopotential, self.tianquan_levels)
-        wind_speed_13 = self._interpolate_levels(wind_speed, self.tianquan_levels)
-        temperature_13 = self._interpolate_levels(temperature, self.tianquan_levels)
-        specific_humidity_13 = self._interpolate_levels(specific_humidity, self.tianquan_levels)
+        # Interpolate from 10 levels to 13 levels for each variable
+        # We'll use linear interpolation or nearest neighbor
+        def interpolate_levels(var_data, from_levels, to_levels):
+            """
+            Interpolate variable data from from_levels to to_levels.
+            var_data: [batch, len(from_levels), h, w]
+            Returns: [batch, len(to_levels), h, w]
+            """
+            var_data_np = var_data.cpu().numpy()
+            batch_size, n_from, h, w = var_data_np.shape
+            
+            # Convert to [batch, h, w, n_from] for interpolation
+            var_data_reshaped = var_data_np.transpose(0, 2, 3, 1)  # [batch, h, w, n_from]
+            
+            # Interpolate for each spatial location
+            interpolated = np.zeros((batch_size, h, w, len(to_levels)), dtype=var_data_np.dtype)
+            
+            for b in range(batch_size):
+                for i in range(h):
+                    for j in range(w):
+                        # Linear interpolation
+                        interpolated[b, i, j, :] = np.interp(
+                            to_levels, from_levels, var_data_reshaped[b, i, j, :],
+                            left=var_data_reshaped[b, i, j, 0],
+                            right=var_data_reshaped[b, i, j, -1]
+                        )
+            
+            # Convert back to [batch, n_to, h, w]
+            result = torch.from_numpy(interpolated.transpose(0, 3, 1, 2)).to(device)
+            return result
+        
+        # Interpolate each variable from 10 to 13 levels
+        # Note: self.cir_levels is already 10 levels: [10, 50, 100, 200, 300, 500, 700, 850, 925, 1000]
+        geopotential_13 = interpolate_levels(geopotential, self.cir_levels, self.tianquan_levels_list)
+        wind_speed_13 = interpolate_levels(wind_speed, self.cir_levels, self.tianquan_levels_list)
+        temperature_13 = interpolate_levels(temperature, self.cir_levels, self.tianquan_levels_list)
+        specific_humidity_13 = interpolate_levels(specific_humidity, self.cir_levels, self.tianquan_levels_list)
         
         # For relative_humidity, we don't have it in CirT, so we'll use zeros or estimate
         # For now, use zeros (can be improved later)
@@ -238,32 +228,22 @@ class TianQuanWrapper(nn.Module):
         
         # Stack: [geopotential, wind_speed, temperature, relative_humidity, specific_humidity]
         # Shape: [batch, 5 vars, 13 levels, h, w]
-        atmo_vars = torch.stack(
-            [
-                geopotential_13,      # [batch, 13, h, w]
-                wind_speed_13,        # [batch, 13, h, w]
-                temperature_13,       # [batch, 13, h, w]
-                relative_humidity_13, # [batch, 13, h, w]
-                specific_humidity_13, # [batch, 13, h, w]
-            ],
-            dim=1,
-        )  # [batch, 5, 13, h, w]
+        atmo_vars = torch.stack([
+            geopotential_13,      # [batch, 13, h, w]
+            wind_speed_13,        # [batch, 13, h, w]
+            temperature_13,        # [batch, 13, h, w]
+            relative_humidity_13, # [batch, 13, h, w]
+            specific_humidity_13, # [batch, 13, h, w]
+        ], dim=1)  # [batch, 5, 13, h, w]
         
         # Reshape to [batch, 5×13, h, w]
-        atmo_vars_flat = atmo_vars.reshape(
-            batch_size,
-            self.tianquan_upper_vars * self.tianquan_levels,
-            height,
-            width,
-        )
+        atmo_vars_flat = atmo_vars.reshape(batch_size, self.tianquan_upper_vars * self.tianquan_levels, height, width)
         
         # Concatenate surface and atmospheric: [batch, 2 + 65, h, w] = [batch, 67, h, w]
         x_tianquan = torch.cat([surface_vars, atmo_vars_flat], dim=1)
         
         return x_tianquan
-
-    # ----------------- mapping TianQuan -> CirT ----------------- #
-
+    
     def _map_tianquan_to_cir(self, preds_full, device):
         """
         Map TianQuan output (67 vars: 2 surface + 5×13 pressure) back to CirT format (63 vars: 3 single + 6×10 pressure).
@@ -279,30 +259,56 @@ class TianQuanWrapper(nn.Module):
         
         # Split: [2 surface, 65 atmospheric]
         surface_pred = preds_full[:, :, :self.tianquan_surface_vars, :, :]  # [batch, time, 2, h, w]
-        atmo_pred = preds_full[:, :, self.tianquan_surface_vars:, :, :]     # [batch, time, 65, h, w]
+        atmo_pred = preds_full[:, :, self.tianquan_surface_vars:, :, :]  # [batch, time, 65, h, w]
         
         # Reshape atmospheric: [batch, time, 5 vars, 13 levels, h, w]
-        atmo_reshaped = atmo_pred.reshape(
-            batch_size,
-            time_steps,
-            self.tianquan_upper_vars,
-            self.tianquan_levels,
-            height,
-            width,
-        )
+        atmo_reshaped = atmo_pred.reshape(batch_size, time_steps, self.tianquan_upper_vars, 
+                                          self.tianquan_levels, height, width)
         
         # Extract TianQuan variables
-        geopotential_13 = atmo_reshaped[:, :, 0, :, :, :]        # [batch, time, 13, h, w]
-        wind_speed_13 = atmo_reshaped[:, :, 1, :, :, :]          # [batch, time, 13, h, w]
-        temperature_13 = atmo_reshaped[:, :, 2, :, :, :]         # [batch, time, 13, h, w]
-        relative_humidity_13 = atmo_reshaped[:, :, 3, :, :, :]   # [batch, time, 13, h, w]
-        specific_humidity_13 = atmo_reshaped[:, :, 4, :, :, :]   # [batch, time, 13, h, w]
+        geopotential_13 = atmo_reshaped[:, :, 0, :, :, :]  # [batch, time, 13, h, w]
+        wind_speed_13 = atmo_reshaped[:, :, 1, :, :, :]  # [batch, time, 13, h, w]
+        temperature_13 = atmo_reshaped[:, :, 2, :, :, :]  # [batch, time, 13, h, w]
+        relative_humidity_13 = atmo_reshaped[:, :, 3, :, :, :]  # [batch, time, 13, h, w]
+        specific_humidity_13 = atmo_reshaped[:, :, 4, :, :, :]  # [batch, time, 13, h, w]
         
-        # Interpolate each variable from 13 to 10 levels (pure torch)
-        geopotential_10 = self._interpolate_levels_back(geopotential_13, self.cir_pressure_levels)
-        wind_speed_10 = self._interpolate_levels_back(wind_speed_13, self.cir_pressure_levels)
-        temperature_10 = self._interpolate_levels_back(temperature_13, self.cir_pressure_levels)
-        specific_humidity_10 = self._interpolate_levels_back(specific_humidity_13, self.cir_pressure_levels)
+        # Interpolate from 13 levels back to 10 levels
+        def interpolate_levels_back(var_data, from_levels, to_levels):
+            """
+            Interpolate variable data from from_levels to to_levels.
+            var_data: [batch, time, len(from_levels), h, w]
+            Returns: [batch, time, len(to_levels), h, w]
+            """
+            var_data_np = var_data.cpu().numpy()
+            batch_size, time_steps, n_from, h, w = var_data_np.shape
+            
+            # Convert to [batch, time, h, w, n_from] for interpolation
+            var_data_reshaped = var_data_np.transpose(0, 1, 3, 4, 2)  # [batch, time, h, w, n_from]
+            
+            # Interpolate for each spatial location
+            interpolated = np.zeros((batch_size, time_steps, h, w, len(to_levels)), dtype=var_data_np.dtype)
+            
+            for b in range(batch_size):
+                for t in range(time_steps):
+                    for i in range(h):
+                        for j in range(w):
+                            # Linear interpolation
+                            interpolated[b, t, i, j, :] = np.interp(
+                                to_levels, from_levels, var_data_reshaped[b, t, i, j, :],
+                                left=var_data_reshaped[b, t, i, j, 0],
+                                right=var_data_reshaped[b, t, i, j, -1]
+                            )
+            
+            # Convert back to [batch, time, n_to, h, w]
+            result = torch.from_numpy(interpolated.transpose(0, 1, 4, 2, 3)).to(device)
+            return result
+        
+        # Interpolate each variable from 13 to 10 levels
+        # Note: self.cir_levels is already 10 levels: [10, 50, 100, 200, 300, 500, 700, 850, 925, 1000]
+        geopotential_10 = interpolate_levels_back(geopotential_13, self.tianquan_levels_list, self.cir_levels)
+        wind_speed_10 = interpolate_levels_back(wind_speed_13, self.tianquan_levels_list, self.cir_levels)
+        temperature_10 = interpolate_levels_back(temperature_13, self.tianquan_levels_list, self.cir_levels)
+        specific_humidity_10 = interpolate_levels_back(specific_humidity_13, self.tianquan_levels_list, self.cir_levels)
         
         # For u and v components, we need to decompose wind_speed
         # We'll use a simple approximation: assume u and v have equal magnitude
@@ -316,29 +322,20 @@ class TianQuanWrapper(nn.Module):
         
         # Stack CirT pressure variables: [geopotential, specific_humidity, temperature, u, v, vertical_velocity]
         # Shape: [batch, time, 6 vars, 10 levels, h, w]
-        atmo_cir = torch.stack(
-            [
-                geopotential_10,      # [batch, time, 10, h, w]
-                specific_humidity_10, # [batch, time, 10, h, w]
-                temperature_10,       # [batch, time, 10, h, w]
-                u_component_10,       # [batch, time, 10, h, w]
-                v_component_10,       # [batch, time, 10, h, w]
-                vertical_velocity_10, # [batch, time, 10, h, w]
-            ],
-            dim=2,
-        )  # [batch, time, 6, 10, h, w]
+        atmo_cir = torch.stack([
+            geopotential_10,      # [batch, time, 10, h, w]
+            specific_humidity_10, # [batch, time, 10, h, w]
+            temperature_10,       # [batch, time, 10, h, w]
+            u_component_10,       # [batch, time, 10, h, w]
+            v_component_10,       # [batch, time, 10, h, w]
+            vertical_velocity_10, # [batch, time, 10, h, w]
+        ], dim=2)  # [batch, time, 6, 10, h, w]
         
         # Reshape to [batch, time, 60, h, w]
-        atmo_cir_flat = atmo_cir.reshape(
-            batch_size,
-            time_steps,
-            self.cir_pressure_vars * self.cir_pressure_levels,
-            height,
-            width,
-        )
+        atmo_cir_flat = atmo_cir.reshape(batch_size, time_steps, self.cir_pressure_vars * self.cir_pressure_levels, height, width)
         
         # Map surface variables back: [t2m, wind_speed_10m] -> [u10, v10, t2m]
-        t2m = surface_pred[:, :, 0:1, :, :]          # [batch, time, 1, h, w]
+        t2m = surface_pred[:, :, 0:1, :, :]  # [batch, time, 1, h, w]
         wind_speed_10m = surface_pred[:, :, 1:2, :, :]  # [batch, time, 1, h, w]
         
         # Decompose wind_speed back to u and v (approximation)
@@ -352,9 +349,7 @@ class TianQuanWrapper(nn.Module):
         preds_cir = torch.cat([single_cir, atmo_cir_flat], dim=2)
         
         return preds_cir
-
-    # ----------------- 构造输入 ----------------- #
-
+    
     def _create_dummy_inputs(self, x, device):
         """
         Create dummy inputs required by TianQuan from ziyu_cli format.
@@ -461,19 +456,20 @@ class TianQuanWrapper(nn.Module):
             preds_full = torch.cat([surf_pred, atmo_pred_flat], dim=2)  # [batch, time, 67, height, width]
             
             # Map back from TianQuan format (67 vars) to CirT format (63 vars)
+            # Output: [batch, time, 63, height, width] where height=121, width=240 (matching CirT)
             preds = self._map_tianquan_to_cir(preds_full, device)  # [batch, time, 63, height, width]
             
             # Verify output shape matches CirT format: 63 variables, [121, 240] grid
             if preds.shape[2] != self.input_size:
-                raise ValueError(
-                    f"Output channels mismatch: expected {self.input_size} (CirT format), "
-                    f"got {preds.shape[2]}"
-                )
-            # The decoder should preserve spatial dimensions; if slightly off, crop/pad
+                raise ValueError(f"Output channels mismatch: expected {self.input_size} (CirT format), got {preds.shape[2]}")
+            # Note: Spatial resolution (height, width) should match img_size [121, 240]
+            # The decoder should preserve spatial dimensions, but we allow slight variations due to patching
             if preds.shape[3] != height or preds.shape[4] != width:
+                # If spatial dims don't match, crop or pad to match input
                 if preds.shape[3] > height or preds.shape[4] > width:
                     preds = preds[:, :, :, :height, :width]
                 else:
+                    # Pad if needed (shouldn't happen normally)
                     pad_h = height - preds.shape[3]
                     pad_w = width - preds.shape[4]
                     preds = torch.nn.functional.pad(preds, (0, pad_w, 0, pad_h))
@@ -482,5 +478,7 @@ class TianQuanWrapper(nn.Module):
             
         except Exception as e:
             print(f"Error in TianQuan forward: {e}")
-            # Fallback: return input with time dimension added（注意：这里没有梯度链路，仅用于 debug）
+            # Fallback: return simple prediction
+            # Return input with time dimension added
             return x.unsqueeze(1).repeat(1, 2, 1, 1, 1)  # [batch, 2, channels, height, width]
+
