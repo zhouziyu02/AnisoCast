@@ -29,6 +29,8 @@ def test_auto_evaluate_script():
                 print("  - ViT")
             if "EGNN" in result.stdout:
                 print("  - EGNN")
+            if "ours" in result.stdout:
+                print("  - ours")
         else:
             print(f"❌ 自动评估脚本测试失败: {result.stderr}")
             return False
@@ -48,7 +50,8 @@ def test_config_files():
         "CIRT/configs/ClimODE.yaml",
         "CIRT/configs/ClimaX.yaml",
         "CIRT/configs/ViT.yaml",
-        "CIRT/configs/EGNN.yaml"
+        "CIRT/configs/EGNN.yaml",
+        "CIRT/configs/ours.yaml"
     ]
     
     all_exist = True
@@ -67,7 +70,8 @@ def test_evaluation_scripts():
     
     eval_scripts = [
         "inference/others/evaluate_cirt.py",
-        "inference/others/evaluate_climax.py"
+        "inference/others/evaluate_climax.py",
+        "inference/others/evaluate_ours.py"
     ]
     
     all_exist = True
