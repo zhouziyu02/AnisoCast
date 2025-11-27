@@ -371,9 +371,10 @@ class S2SBenchmarkModel(pl.LightningModule):
         }
     
     def on_before_optimizer_step(self, optimizer):
-        # Gradient clipping for EGNN to prevent explosion
-        if 'egnn' in self.model_args.get('model_name', '').lower():
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+        """Apply gradient clipping to stabilize training across all models."""
+        max_norm = self.model_args.get('grad_clip_norm', 0.0)
+        if max_norm and max_norm > 0:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=max_norm)
 
     def setup(self, stage=None):
         if 'egnn' in self.model_args.get('model_name', '').lower():
