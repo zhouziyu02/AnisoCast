@@ -38,9 +38,7 @@ class S2SBenchmarkModel(pl.LightningModule):
         if 'ours' == self.model_args['model_name']:
             from .ours import Model as OursModel
             self.model = OursModel(
-                input_size=self.model_args['input_size'] ,
-                # output_size=self.model_args['output_size'],
-                pred_len=self.model_args.get('pred_len', 2)
+                input_size=self.model_args['input_size']
             )
 
         if 'egnn' in self.model_args['model_name'].lower():
