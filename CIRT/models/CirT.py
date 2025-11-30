@@ -287,13 +287,10 @@ class Model(nn.Module):
 
     def forward(self, x):
         B, V, H, W = x.shape
-        print("Input shape:", x.shape)
+        # print("Input shape:", x.shape)
         out_transformers = self.forward_encoder(x)  # B, L, D
         preds = self.head(out_transformers)  # B, L, V*p*p
         preds = self.unpatchify(preds)
 
-        # real, img = torch.split(preds, preds.shape[-1] // 2, dim=-1)
-        # preds = torch.cat([real, -img], dim=-1)
-        # preds = torch.fft.irfft(preds, W, norm="forward")
-        print("Output shape:", preds.shape)
+ 
         return preds
