@@ -39,7 +39,7 @@ class S2SBenchmarkModel(pl.LightningModule):
             from .ours import Model as OursModel
             self.model = OursModel(
                 input_size=self.model_args['input_size'] ,
-                output_size=self.model_args['output_size'],
+                # output_size=self.model_args['output_size'],
                 pred_len=self.model_args.get('pred_len', 2)
             )
 
