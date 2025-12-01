@@ -152,8 +152,11 @@ def evaluate_transformer(config_file, checkpoint_path):
 
 
 def evaluate_ours(config_file, checkpoint_path):
+    """
+    评估ours模型（使用与CirT相同的评估脚本）
+    """
     print("🎯 开始ours模型评估...")
-    return evaluate_ours(config_file, checkpoint_path)
+    return evaluate_cirt(config_file, checkpoint_path)
 
     
 

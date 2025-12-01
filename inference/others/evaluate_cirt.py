@@ -134,10 +134,33 @@ def calculate_metrics(all_pred, all_y, model_args, data_args, save_dir):
 
 def load_model_and_predict(model_args, data_args, checkpoint_path):
     """
-    Load CirT model from checkpoint and generate predictions
+    Load model from checkpoint and generate predictions
     """
-    print("Loading CirT model from checkpoint...")
+    print("Loading model from checkpoint...")
     print(f"Checkpoint path: {checkpoint_path}")
+    
+    # Load checkpoint to get saved hyperparameters
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    
+    # Extract hyperparameters from checkpoint if available
+    # Priority: checkpoint hyperparameters > provided config file
+    if 'hyper_parameters' in checkpoint:
+        saved_hyperparams = checkpoint['hyper_parameters']
+        # Use saved model_args and data_args if available, otherwise use provided ones
+        if 'model_args' in saved_hyperparams:
+            saved_model_name = saved_hyperparams['model_args'].get('model_name', 'unknown')
+            print(f"⚠️  Found saved model_args in checkpoint with model_name: {saved_model_name}")
+            print(f"⚠️  Overriding config file model_name: {model_args.get('model_name', 'unknown')}")
+            model_args = saved_hyperparams['model_args']
+        if 'data_args' in saved_hyperparams:
+            print(f"⚠️  Using data_args from checkpoint (overriding config file)")
+            # Merge data_args: use saved ones, but allow config file to override test_years if needed
+            saved_data_args = saved_hyperparams['data_args']
+            # Keep test_years from config if explicitly provided, otherwise use checkpoint
+            if 'test_years' in data_args:
+                saved_data_args['test_years'] = data_args['test_years']
+            data_args = saved_data_args
+    
     print(f"Model name: {model_args['model_name']}")
     print(f"Test years: {data_args['test_years']}")
 
@@ -145,7 +168,8 @@ def load_model_and_predict(model_args, data_args, checkpoint_path):
     model_checkpoint = model.S2SBenchmarkModel.load_from_checkpoint(
         str(checkpoint_path), 
         model_args=model_args, 
-        data_args=data_args
+        data_args=data_args,
+        strict=False  # Allow partial loading if there are minor mismatches
     )
 
     # Set up the dataloaders
@@ -192,9 +216,9 @@ def load_model_and_predict(model_args, data_args, checkpoint_path):
 
 def main(args):
     """
-    Main function to evaluate CirT model and generate metrics CSV
+    Main function to evaluate model and generate metrics CSV
     """
-    # Load configuration
+    # Load configuration (will be overridden by checkpoint hyperparameters if available)
     with open(args.config_filepath, 'r') as config_file:
         hyperparams = yaml.load(config_file, Loader=yaml.FullLoader)
     
@@ -247,13 +271,13 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Evaluate CirT model and generate metrics CSV')
+    parser = argparse.ArgumentParser(description='Evaluate model and generate metrics CSV')
     parser.add_argument('--config_filepath', 
                        default='CIRT/configs/CirT.yaml',
-                       help='Path to CirT configuration YAML file')
+                       help='Path to configuration YAML file (model_args/data_args will be overridden by checkpoint if available)')
     parser.add_argument('--checkpoint_path', 
                        default=None,
-                       help='Path to CirT model checkpoint (default: ./checkpoints/CirT/best.ckpt)')
+                       help='Path to model checkpoint (default: ./checkpoints/CirT/best.ckpt)')
     parser.add_argument('--output_dir',
                        default='./results',
                        help='Output directory for results (default: ./results)')
