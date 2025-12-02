@@ -148,8 +148,10 @@ str_array_to_yaml_list() {
   printf '%s' "$result"
 }
 
-config_file=$(mktemp /tmp/ours_config_XXXXXX.yaml)
-trap "rm -f $config_file" EXIT
+# 为当前运行生成时间戳，并在logs目录中创建稳定的配置文件路径
+timestamp=$(date +"%Y%m%d_%H%M%S")
+log_file="$log_dir/ours_${timestamp}.log"
+config_file="$log_dir/ours_${timestamp}.yaml"
 
 cat > "$config_file" <<EOF
 model_args:
@@ -210,10 +212,7 @@ echo "=========================================="
 echo "$settings_snapshot"
 echo "=========================================="
 echo
-
 export NP=$np
-timestamp=$(date +"%Y%m%d_%H%M%S")
-log_file="$log_dir/ours_${timestamp}.log"
 
 common_args=(--config_filepath "$config_file" --devices "$np" --accelerator gpu)
 if (( np > 1 )); then
