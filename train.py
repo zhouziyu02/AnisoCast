@@ -15,6 +15,7 @@ pl.seed_everything(42)
 
 from CIRT.models import model
 from CIRT.callbacks import TrainingSpeedCallback
+import shutil
 
 # os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 
@@ -43,7 +44,64 @@ def main(args):
     
     # Initialize training
     log_dir = Path('logs') / model_args['model_name']
-    checkpoint_callback = ModelCheckpoint(monitor='val_loss', mode='min')
+    
+    # 创建checkpoint目录并保存配置副本（解决并行训练时的参数读取混乱问题）
+    # Lightning会自动创建version目录，我们在这里保存配置到lightning_logs根目录
+    # 实际checkpoint会保存在version_X/checkpoints/下
+    config_backup_dir = Path('lightning_logs')
+    config_backup_dir.mkdir(exist_ok=True)
+    
+    # 保存配置副本（带时间戳，避免覆盖）
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    config_backup_path = config_backup_dir / f"config_{model_args['model_name']}_{timestamp}.yaml"
+    with open(config_backup_path, 'w') as f:
+        yaml.dump(hyperparams, f, default_flow_style=False, sort_keys=False)
+    print(f"💾 配置已保存到: {config_backup_path}")
+    
+    checkpoint_callback = ModelCheckpoint(
+        monitor='val_loss', 
+        mode='min',
+        filename='{epoch}-{step}',
+        save_top_k=1,
+        save_last=True
+    )
+    
+    # 创建一个自定义回调，在checkpoint保存时也保存配置副本
+    class ConfigSaverCallback(pl.Callback):
+        def __init__(self, config_path, hyperparams):
+            super().__init__()
+            self.config_path = config_path
+            self.hyperparams = hyperparams
+            self.saved_to_checkpoint_dir = False
+        
+        def on_train_start(self, trainer, pl_module):
+            # 在训练开始时，将配置保存到checkpoint目录
+            if trainer.global_rank == 0 and not self.saved_to_checkpoint_dir:
+                # Lightning会在训练开始时创建version目录，我们通过logger获取路径
+                if trainer.logger and hasattr(trainer.logger, 'log_dir'):
+                    version_dir = Path(trainer.logger.log_dir)
+                    config_copy_path = version_dir / 'config.yaml'
+                    with open(config_copy_path, 'w') as f:
+                        yaml.dump(self.hyperparams, f, default_flow_style=False, sort_keys=False)
+                    print(f"💾 配置已保存到checkpoint目录: {config_copy_path}")
+                    self.saved_to_checkpoint_dir = True
+                else:
+                    # Fallback: 等待Lightning创建version目录
+                    import time
+                    time.sleep(2)
+                    version_dirs = sorted(
+                        [d for d in Path('lightning_logs').glob('version_*') if d.is_dir()],
+                        key=lambda x: int(x.name.split('_')[1]) if x.name.split('_')[1].isdigit() else 0
+                    )
+                    if version_dirs:
+                        latest_version = version_dirs[-1]
+                        config_copy_path = latest_version / 'config.yaml'
+                        with open(config_copy_path, 'w') as f:
+                            yaml.dump(self.hyperparams, f, default_flow_style=False, sort_keys=False)
+                        print(f"💾 配置已保存到checkpoint目录: {config_copy_path}")
+                        self.saved_to_checkpoint_dir = True
+    
+    config_saver = ConfigSaverCallback(args.config_filepath, hyperparams)
     
     # 根据参数决定是否使用TensorBoard
     tb_logger = None
@@ -83,7 +141,7 @@ def main(args):
         strategy=strategy,
         max_epochs=model_args['epochs'],
         logger=tb_logger,
-        callbacks=[checkpoint_callback, speed_callback],
+        callbacks=[checkpoint_callback, speed_callback, config_saver],
         enable_progress_bar=True,
         precision=precision,
      )

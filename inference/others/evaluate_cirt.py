@@ -218,9 +218,36 @@ def main(args):
     """
     Main function to evaluate model and generate metrics CSV
     """
-    # Load configuration (will be overridden by checkpoint hyperparameters if available)
-    with open(args.config_filepath, 'r') as config_file:
-        hyperparams = yaml.load(config_file, Loader=yaml.FullLoader)
+    # Determine checkpoint path
+    if args.checkpoint_path:
+        checkpoint_path = args.checkpoint_path
+    else:
+        # Try to infer from config file
+        if args.config_filepath:
+            with open(args.config_filepath, 'r') as config_file:
+                hyperparams = yaml.load(config_file, Loader=yaml.FullLoader)
+                model_name = hyperparams.get('model_args', {}).get('model_name', 'CirT')
+            checkpoint_path = f"./checkpoints/{model_name}/best.ckpt"
+        else:
+            raise ValueError("Either --checkpoint_path or --config_filepath must be provided")
+    
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint not found at: {checkpoint_path}")
+    
+    # 优先从checkpoint目录读取配置（解决并行训练时的参数读取混乱问题）
+    checkpoint_dir = Path(checkpoint_path).parent.parent  # checkpoint在version_X/checkpoints/下
+    config_in_checkpoint = checkpoint_dir / 'config.yaml'
+    
+    if config_in_checkpoint.exists():
+        print(f"📋 从checkpoint目录读取配置: {config_in_checkpoint}")
+        with open(config_in_checkpoint, 'r') as config_file:
+            hyperparams = yaml.load(config_file, Loader=yaml.FullLoader)
+    elif args.config_filepath and os.path.exists(args.config_filepath):
+        print(f"⚠️  checkpoint目录中未找到config.yaml，使用提供的配置文件: {args.config_filepath}")
+        with open(args.config_filepath, 'r') as config_file:
+            hyperparams = yaml.load(config_file, Loader=yaml.FullLoader)
+    else:
+        raise FileNotFoundError(f"无法找到配置文件。请确保checkpoint目录包含config.yaml，或提供--config_filepath")
     
     model_args = hyperparams['model_args']
     data_args = hyperparams['data_args']
@@ -228,16 +255,6 @@ def main(args):
     # Create save directory
     save_dir = Path(f"./results/{model_args['model_name']}")
     save_dir.mkdir(parents=True, exist_ok=True)
-
-    # Determine checkpoint path
-    if args.checkpoint_path:
-        checkpoint_path = args.checkpoint_path
-    else:
-        # Default checkpoint path
-        checkpoint_path = f"./checkpoints/{model_args['model_name']}/best.ckpt"
-    
-    if not os.path.exists(checkpoint_path):
-        raise FileNotFoundError(f"Checkpoint not found at: {checkpoint_path}")
 
     # Load model and generate predictions
     all_pred, all_y = load_model_and_predict(model_args, data_args, checkpoint_path)
