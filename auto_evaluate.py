@@ -55,6 +55,17 @@ def evaluate_cirt(config_file, checkpoint_path):
     """
     print("🎯 开始CirT模型评估...")
     
+    # 从配置文件读取模型名称
+    model_name = None
+    try:
+        import yaml
+        with open(config_file, 'r') as f:
+            config = yaml.safe_load(f)
+            if 'model_args' in config and 'model_name' in config['model_args']:
+                model_name = config['model_args']['model_name']
+    except:
+        pass
+    
     eval_script = "inference/others/evaluate_cirt.py"
     if not os.path.exists(eval_script):
         print(f"❌ 评估脚本不存在: {eval_script}")
@@ -70,13 +81,42 @@ def evaluate_cirt(config_file, checkpoint_path):
     
     try:
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        
+        # 提取CSV文件路径（如果输出中有）
+        csv_path = None
+        summary_lines = []
+        if result.stdout:
+            for line in result.stdout.split('\n'):
+                if 'Results saved to:' in line:
+                    # 提取路径，格式通常是 "Results saved to: ./results/ours/ours_metrics_2025-12-02_01-42-59.csv"
+                    try:
+                        csv_path = line.split('Results saved to:')[1].strip()
+                        print(f"📄 {line.strip()}")
+                    except:
+                        pass
+                elif 'SUMMARY STATISTICS' in line or 'Average RMSE' in line or 'Average ACC' in line or 'Average MS_SSIM' in line:
+                    summary_lines.append(line.strip())
+        
+        # 打印摘要统计
+        if summary_lines:
+            print("\n" + "\n".join(summary_lines))
+        
         print("✅ CirT评估完成！")
-        print("📁 结果保存在: ./results/CirT/")
+        if csv_path:
+            print(f"📄 CSV结果文件: {csv_path}")
+        else:
+            # 如果没有找到，尝试从model_name推断
+            if model_name:
+                print(f"📁 结果保存在: ./results/{model_name}/")
+                print("💡 提示: 查找最新的 *_metrics_*.csv 文件")
         print("📊 包含指标: RMSE, MAE, Bias, R², ACC, MS-SSIM, SpectralDiv, SpectralRes")
         return True
     except subprocess.CalledProcessError as e:
         print(f"❌ CirT评估失败: {e}")
-        print(f"错误输出: {e.stderr}")
+        if e.stdout:
+            print(f"标准输出: {e.stdout}")
+        if e.stderr:
+            print(f"错误输出: {e.stderr}")
         return False
 
 def evaluate_climode(config_file, checkpoint_path):
@@ -153,10 +193,73 @@ def evaluate_transformer(config_file, checkpoint_path):
 
 def evaluate_ours(config_file, checkpoint_path):
     """
-    评估ours模型（使用与CirT相同的评估脚本）
+    评估ours模型
     """
     print("🎯 开始ours模型评估...")
-    return evaluate_cirt(config_file, checkpoint_path)
+    
+    # 从配置文件读取模型名称
+    model_name = None
+    try:
+        import yaml
+        with open(config_file, 'r') as f:
+            config = yaml.safe_load(f)
+            if 'model_args' in config and 'model_name' in config['model_args']:
+                model_name = config['model_args']['model_name']
+    except:
+        pass
+    
+    eval_script = "inference/others/evaluate_ours.py"
+    if not os.path.exists(eval_script):
+        print(f"❌ 评估脚本不存在: {eval_script}")
+        return False
+    
+    cmd = [
+        "python3", eval_script,
+        "--config_filepath", config_file,
+        "--checkpoint_path", checkpoint_path
+    ]
+    
+    print(f"🚀 执行命令: {' '.join(cmd)}")
+    
+    try:
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        
+        # 提取CSV文件路径（如果输出中有）
+        csv_path = None
+        summary_lines = []
+        if result.stdout:
+            for line in result.stdout.split('\n'):
+                if 'Results saved to:' in line:
+                    # 提取路径，格式通常是 "Results saved to: ./results/ours/ours_metrics_2025-12-02_01-42-59.csv"
+                    try:
+                        csv_path = line.split('Results saved to:')[1].strip()
+                        print(f"📄 {line.strip()}")
+                    except:
+                        pass
+                elif 'SUMMARY STATISTICS' in line or 'Average RMSE' in line or 'Average ACC' in line or 'Average MS_SSIM' in line:
+                    summary_lines.append(line.strip())
+        
+        # 打印摘要统计
+        if summary_lines:
+            print("\n" + "\n".join(summary_lines))
+        
+        print("✅ ours评估完成！")
+        if csv_path:
+            print(f"📄 CSV结果文件: {csv_path}")
+        else:
+            # 如果没有找到，尝试从model_name推断
+            if model_name:
+                print(f"📁 结果保存在: ./results/{model_name}/")
+                print("💡 提示: 查找最新的 *_metrics_*.csv 文件")
+        print("📊 包含指标: RMSE, MAE, Bias, R², ACC, MS-SSIM, SpectralDiv, SpectralRes")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"❌ ours评估失败: {e}")
+        if e.stdout:
+            print(f"标准输出: {e.stdout}")
+        if e.stderr:
+            print(f"错误输出: {e.stderr}")
+        return False
 
     
 

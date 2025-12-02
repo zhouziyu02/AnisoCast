@@ -251,8 +251,12 @@ def main(args):
     csv_path = save_dir / csv_filename
     metrics_df.to_csv(csv_path, index=False)
     
-    print(f"\nResults saved to: {csv_path}")
-    print(f"Total metrics calculated: {len(metrics_df)}")
+    # 使用绝对路径并明确输出
+    csv_abs_path = os.path.abspath(csv_path)
+    print(f"\n{'='*60}")
+    print(f"📄 Results saved to: {csv_abs_path}")
+    print(f"📊 Total metrics calculated: {len(metrics_df)}")
+    print(f"{'='*60}")
     
     # Print summary statistics
     print("\n=== SUMMARY STATISTICS ===")
@@ -286,8 +290,10 @@ if __name__ == "__main__":
     
     try:
         result_path = main(args)
+        result_abs_path = os.path.abspath(result_path)
         print(f"\n✅ Evaluation completed successfully!")
-        print(f"📊 Metrics CSV saved to: {result_path}")
+        print(f"📄 Metrics CSV file: {result_abs_path}")
+        print(f"📁 Directory: {os.path.dirname(result_abs_path)}")
     except Exception as e:
         print(f"\n❌ Error during evaluation: {str(e)}")
         raise
