@@ -362,16 +362,25 @@ class S2SBenchmarkModel(pl.LightningModule):
         return loss
 
     def configure_optimizers(self):
+        # 容错处理：确保超参数为正确的数值类型（避免 YAML/脚本传入字符串）
+        lr = float(self.model_args['learning_rate'])
+        weight_decay = float(self.model_args.get('weight_decay', 1e-5))
+        t_max = int(self.model_args['t_max'])
+
         optimizer = torch.optim.AdamW(
-            self.model.parameters(), 
-            lr=self.model_args['learning_rate'],
-            weight_decay=self.model_args.get('weight_decay', 1e-5),
-            eps=1e-8  # Add epsilon for numerical stability
+            self.model.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+            eps=1e-8,  # Add epsilon for numerical stability
         )
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
-                'scheduler': CosineAnnealingLR(optimizer, T_max=self.model_args['t_max'], eta_min=self.model_args['learning_rate'] / 10),
+                'scheduler': CosineAnnealingLR(
+                    optimizer,
+                    T_max=t_max,
+                    eta_min=lr / 10.0,
+                ),
                 'interval': 'epoch',
             }
         }
