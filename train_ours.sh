@@ -1,274 +1,274 @@
 #!/usr/bin/env bash
-# ============================================================================
-# Ours模型训练和评估脚本
-# 用途：统一管理所有可调参数，便于超参搜索
-# 使用方法：修改下面的参数，然后运行 bash train_ours.sh
-# ============================================================================
 
-set -e  # 遇到错误立即退出
+set -euo pipefail
 
-# ============================================================================
-# 1. 训练超参数 (Training Hyperparameters)
-# ============================================================================
-LEARNING_RATE=0.001          # 学习率 (建议范围: 0.0001 - 0.01)
-WEIGHT_DECAY=1e-5            # 权重衰减 (建议范围: 1e-6 - 1e-3)
-EPOCHS=20                     # 训练轮数
-T_MAX=500                     # 余弦退火调度器的T_max
-GRAD_CLIP_NORM=1.0           # 梯度裁剪阈值 (0表示不裁剪)
+self_name=$(basename "$0")
+root_dir=$(cd "$(dirname "$0")" && pwd)
+log_dir="$root_dir/logs"
+mkdir -p "$log_dir"
 
-# ============================================================================
-# 2. 模型架构参数 (Model Architecture Parameters)
-# ============================================================================
-# 这些参数对应 ours.py 中 Model.__init__ 的参数
-IMG_SIZE_H=121                # 图像高度 (纬度维度)
-IMG_SIZE_W=240               # 图像宽度 (经度维度)
-EMBED_DIM=768                # 嵌入维度 (建议: 256, 384, 512, 768)
-DEPTH=8                      # Transformer层数 (建议: 4, 6, 8, 12)
-DECODER_DEPTH=2              # 解码器层数 (建议: 1, 2, 3)
-NUM_HEADS=16                 # 注意力头数 (必须能被embed_dim整除)
-MLP_RATIO=4.0                # MLP扩展比例 (建议: 2.0, 4.0, 8.0)
-DROP_PATH=0.1                # DropPath率 (建议: 0.0 - 0.3)
-DROP_RATE=0.1                # Dropout率 (建议: 0.0 - 0.2)
+# ---------------------------------------------------------------
+# 默认参数 (可通过 CLI 覆盖)
+# ---------------------------------------------------------------
+learning_rate="1e-3"
+weight_decay="1e-5"
+epochs=20
+t_max=500
+grad_clip_norm=1.0
+embed_dim=768
+depth=8
+decoder_depth=2
+num_heads=16
+mlp_ratio=4.0
+drop_path=0.1
+drop_rate=0.1
+batch_size=32
+num_workers=16
+pred_len=2
+np=${NP:-8}
+use_tensorboard=false
+background=true
+custom_tag=""
 
-# ============================================================================
-# 3. 数据参数 (Data Parameters)
-# ============================================================================
-BATCH_SIZE=32                # 批次大小
-NUM_WORKERS=16               # 数据加载器工作进程数
-INPUT_SIZE=63                # 输入变量数 (pred_pressure_vars*10 + single_vars)
-OUTPUT_SIZE=63               # 输出变量数 (pred_pressure_vars*10 + pred_single_vars)
-PRED_LEN=2                   # 预测时间步数 (周数)
+# 固定数据配置
+img_size_h=121
+img_size_w=240
+input_size=63
+output_size=63
+data_dir='/mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/data/S2S'
+train_years=(1979 1980 1981 1982 1983 1984 1985 1986 1987 1988 1989 1990 1991 1992 1993 1994 1995 1996 1997 1998 1999 2000 2001 2002 2003 2004 2005 2006 2007 2008 2009 2010 2011 2012 2013 2014 2015 2016)
+val_years=(2017)
+test_years=(2018)
+n_step=28
+lead_time=15
+single_vars=('10m_u_component_of_wind' '10m_v_component_of_wind' '2m_temperature')
+pred_single_vars=('10m_u_component_of_wind' '10m_v_component_of_wind' '2m_temperature')
+pred_pressure_vars=('geopotential' 'specific_humidity' 'temperature' 'u_component_of_wind' 'v_component_of_wind' 'vertical_velocity')
 
-# 数据路径和年份
-DATA_DIR='/mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/data/S2S'
-TRAIN_YEARS=(1979 1980 1981 1982 1983 1984 1985 1986 1987 1988 1989 1990 1991 1992 1993 1994 1995 1996 1997 1998 1999 2000 2001 2002 2003 2004 2005 2006 2007 2008 2009 2010 2011 2012 2013 2014 2015 2016)
-VAL_YEARS=(2017)
-TEST_YEARS=(2018)
-N_STEP=28                    # 时间步数
-LEAD_TIME=15                 # 提前时间
+usage() {
+  cat <<EOF
+Usage: bash $self_name [options]
 
-# 变量列表
-SINGLE_VARS=('10m_u_component_of_wind' '10m_v_component_of_wind' '2m_temperature')
-PRED_SINGLE_VARS=('10m_u_component_of_wind' '10m_v_component_of_wind' '2m_temperature')
-PRED_PRESSURE_VARS=('geopotential' 'specific_humidity' 'temperature' 'u_component_of_wind' 'v_component_of_wind' 'vertical_velocity')
+Options:
+  --lr, --learning-rate <float>     学习率 (示例: --lr 5e-4 或 --lr5e-4)
+  --batch, --batch-size <int>       批次大小
+  --epochs <int>                    训练轮数
+  --embed, --embed-dim <int>        嵌入维度 (需能整除注意力头数)
+  --depth <int>                     Transformer层数
+  --decoder-depth <int>             解码器层数
+  --heads, --num-heads <int>        注意力头数
+  --mlp-ratio <float>               MLP扩展比例
+  --drop-path <float>               DropPath率
+  --drop-rate <float>               Dropout率
+  --weight-decay <float>            权重衰减
+  --grad-clip <float>               梯度裁剪阈值
+  --np <int>                        GPU数量
+  --tensorboard                     启用TensorBoard
+  --no-tensorboard                  禁用TensorBoard
+  --foreground                      前台运行 (默认后台)
+  --tag <string>                    自定义标签 (写入日志和PID)
+  -h, --help                        查看帮助
+EOF
+}
 
-# ============================================================================
-# 4. 训练设置 (Training Settings)
-# ============================================================================
-NP=${NP:-8}                  # GPU数量 (可通过环境变量覆盖)
-USE_TENSORBOARD=false        # 是否启用TensorBoard
-BACKGROUND=true              # 是否后台运行
+while [[ $# -gt 0 ]]; do
+  arg="$1"
+  case $arg in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --lr|--learning-rate)
+      learning_rate="$2"; shift 2 ;;
+    --lr*)
+      learning_rate="${arg#--lr}"; shift ;;
+    --batch|--batch-size|--batchsize)
+      batch_size="$2"; shift 2 ;;
+    --batch*)
+      batch_size="${arg#--batch}"; shift ;;
+    --epochs)
+      epochs="$2"; shift 2 ;;
+    --embed|--embed-dim)
+      embed_dim="$2"; shift 2 ;;
+    --depth)
+      depth="$2"; shift 2 ;;
+    --decoder-depth)
+      decoder_depth="$2"; shift 2 ;;
+    --heads|--num-heads)
+      num_heads="$2"; shift 2 ;;
+    --mlp-ratio)
+      mlp_ratio="$2"; shift 2 ;;
+    --drop-path)
+      drop_path="$2"; shift 2 ;;
+    --drop-rate)
+      drop_rate="$2"; shift 2 ;;
+    --weight-decay)
+      weight_decay="$2"; shift 2 ;;
+    --grad-clip)
+      grad_clip_norm="$2"; shift 2 ;;
+    --np)
+      np="$2"; shift 2 ;;
+    --tensorboard)
+      use_tensorboard=true; shift ;;
+    --no-tensorboard)
+      use_tensorboard=false; shift ;;
+    --foreground)
+      background=false; shift ;;
+    --background)
+      background=true; shift ;;
+    --tag)
+      custom_tag="$2"; shift 2 ;;
+    *)
+      echo "Unknown option: $arg" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
 
-# ============================================================================
-# 5. 自动生成配置和运行训练
-# ============================================================================
-
-# 创建临时配置文件
-CONFIG_TEMP=$(mktemp /tmp/ours_config_XXXXXX.yaml)
-trap "rm -f $CONFIG_TEMP" EXIT  # 退出时清理临时文件
-
-# 生成YAML配置
-# 辅助函数：将数组转换为YAML列表格式
 array_to_yaml_list() {
-    local arr=("$@")
-    local result="["
-    for i in "${!arr[@]}"; do
-        if [ $i -gt 0 ]; then
-            result+=", "
-        fi
-        result+="${arr[$i]}"
-    done
-    result+="]"
-    echo "$result"
+  local arr=("$@")
+  local result="["
+  for i in "${!arr[@]}"; do
+    [[ $i -gt 0 ]] && result+=", "
+    result+="${arr[$i]}"
+  done
+  result+="]"
+  printf '%s' "$result"
 }
 
-# 辅助函数：将字符串数组转换为YAML字符串列表格式
 str_array_to_yaml_list() {
-    local arr=("$@")
-    local result="["
-    for i in "${!arr[@]}"; do
-        if [ $i -gt 0 ]; then
-            result+=", "
-        fi
-        result+="'${arr[$i]}'"
-    done
-    result+="]"
-    echo "$result"
+  local arr=("$@")
+  local result="["
+  for i in "${!arr[@]}"; do
+    [[ $i -gt 0 ]] && result+=", "
+    result+="'${arr[$i]}'"
+  done
+  result+="]"
+  printf '%s' "$result"
 }
 
-cat > "$CONFIG_TEMP" <<EOF
+config_file=$(mktemp /tmp/ours_config_XXXXXX.yaml)
+trap "rm -f $config_file" EXIT
+
+cat > "$config_file" <<EOF
 model_args:
     model_name: 'ours'
-    input_size: $INPUT_SIZE
-    output_size: $OUTPUT_SIZE
-    learning_rate: $LEARNING_RATE
-    weight_decay: $WEIGHT_DECAY
-    num_workers: $NUM_WORKERS
-    epochs: $EPOCHS
-    t_max: $T_MAX
-    pred_len: $PRED_LEN
-    grad_clip_norm: $GRAD_CLIP_NORM
+    input_size: $input_size
+    output_size: $output_size
+    learning_rate: $learning_rate
+    weight_decay: $weight_decay
+    num_workers: $num_workers
+    epochs: $epochs
+    t_max: $t_max
+    pred_len: $pred_len
+    grad_clip_norm: $grad_clip_norm
     only_headline: False
-    
-    # 模型架构参数 (传递给 ours.py 的 Model.__init__)
-    img_size: [$IMG_SIZE_H, $IMG_SIZE_W]
-    embed_dim: $EMBED_DIM
-    depth: $DEPTH
-    decoder_depth: $DECODER_DEPTH
-    num_heads: $NUM_HEADS
-    mlp_ratio: $MLP_RATIO
-    drop_path: $DROP_PATH
-    drop_rate: $DROP_RATE
+    img_size: [$img_size_h, $img_size_w]
+    embed_dim: $embed_dim
+    depth: $depth
+    decoder_depth: $decoder_depth
+    num_heads: $num_heads
+    mlp_ratio: $mlp_ratio
+    drop_path: $drop_path
+    drop_rate: $drop_rate
 
 data_args:
-    batch_size: $BATCH_SIZE
-    train_years: $(array_to_yaml_list "${TRAIN_YEARS[@]}")
-    test_years: $(array_to_yaml_list "${TEST_YEARS[@]}")
-    val_years: $(array_to_yaml_list "${VAL_YEARS[@]}")
-    data_dir: '$DATA_DIR'
-    n_step: $N_STEP
-    lead_time: $LEAD_TIME
-    single_vars: $(str_array_to_yaml_list "${SINGLE_VARS[@]}")
-    pred_single_vars: $(str_array_to_yaml_list "${PRED_SINGLE_VARS[@]}")
-    pred_pressure_vars: $(str_array_to_yaml_list "${PRED_PRESSURE_VARS[@]}")
+    batch_size: $batch_size
+    train_years: $(array_to_yaml_list "${train_years[@]}")
+    test_years: $(array_to_yaml_list "${test_years[@]}")
+    val_years: $(array_to_yaml_list "${val_years[@]}")
+    data_dir: '$data_dir'
+    n_step: $n_step
+    lead_time: $lead_time
+    single_vars: $(str_array_to_yaml_list "${single_vars[@]}")
+    pred_single_vars: $(str_array_to_yaml_list "${pred_single_vars[@]}")
+    pred_pressure_vars: $(str_array_to_yaml_list "${pred_pressure_vars[@]}")
 EOF
 
+settings_snapshot=$(cat <<SET
+lr=$learning_rate
+batch_size=$batch_size
+epochs=$epochs
+embed_dim=$embed_dim
+depth=$depth
+decoder_depth=$decoder_depth
+num_heads=$num_heads
+mlp_ratio=$mlp_ratio
+drop_path=$drop_path
+drop_rate=$drop_rate
+weight_decay=$weight_decay
+grad_clip_norm=$grad_clip_norm
+np=$np
+tag=$custom_tag
+SET
+)
+
 echo "=========================================="
-echo "🚀 Ours模型训练配置"
+echo "🚀 Ours 模型训练"
 echo "=========================================="
-echo "📋 训练超参数:"
-echo "   - 学习率: $LEARNING_RATE"
-echo "   - 权重衰减: $WEIGHT_DECAY"
-echo "   - 训练轮数: $EPOCHS"
-echo "   - 梯度裁剪: $GRAD_CLIP_NORM"
-echo ""
-echo "🏗️  模型架构:"
-echo "   - 嵌入维度: $EMBED_DIM"
-echo "   - 层数: $DEPTH"
-echo "   - 解码器层数: $DECODER_DEPTH"
-echo "   - 注意力头数: $NUM_HEADS"
-echo "   - MLP比例: $MLP_RATIO"
-echo "   - DropPath: $DROP_PATH"
-echo "   - Dropout: $DROP_RATE"
-echo ""
-echo "📊 数据设置:"
-echo "   - 批次大小: $BATCH_SIZE"
-echo "   - GPU数量: $NP"
+echo "$settings_snapshot"
 echo "=========================================="
-echo ""
+echo
 
-# 设置环境变量
-export NP
+export NP=$np
+timestamp=$(date +"%Y%m%d_%H%M%S")
+log_file="$log_dir/ours_${timestamp}.log"
 
-# 调用原始训练脚本，但使用临时配置文件
-CONFIG_FILE="$CONFIG_TEMP"
-
-# 创建日志目录
-LOG_DIR="./logs"
-mkdir -p "$LOG_DIR"
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-LOG_FILE="${LOG_DIR}/ours_${TIMESTAMP}.log"
-
-# 组装训练命令
-COMMON_ARGS=(--config_filepath "$CONFIG_FILE" --devices "$NP" --accelerator gpu)
-if (( NP > 1 )); then
-  COMMON_ARGS+=(--strategy ddp_find_unused_parameters_true)
+common_args=(--config_filepath "$config_file" --devices "$np" --accelerator gpu)
+if (( np > 1 )); then
+  common_args+=(--strategy ddp_find_unused_parameters_true)
 fi
+$use_tensorboard && common_args+=(--use_tensorboard)
 
-if [[ "$USE_TENSORBOARD" == "true" ]]; then
-  COMMON_ARGS+=(--use_tensorboard)
-fi
-
-if (( NP > 1 )); then
-  LAUNCH_CMD=(torchrun --standalone --nproc_per_node="${NP}" train.py)
+if (( np > 1 )); then
+  launch_cmd=(torchrun --standalone --nproc_per_node="$np" train.py)
 else
-  LAUNCH_CMD=(python3 -u train.py)
+  launch_cmd=(python3 -u train.py)
 fi
+launch_cmd+=("${common_args[@]}")
 
-LAUNCH_CMD+=("${COMMON_ARGS[@]}")
-
-# 运行训练和评估
 run_training_and_eval() {
   {
-    echo "=========================================="
-    echo "Training started at: $(date)"
-    echo "Model: ours"
-    echo "Config: Generated from train_ours.sh"
-    echo "GPUs: $NP"
-    echo "TensorBoard: $USE_TENSORBOARD"
-    echo "=========================================="
-    echo ""
-    
-    echo "== Effective env =="
-    env | grep -E '^(NCCL_|GLOO_|MASTER_|CUDA_VISIBLE_DEVICES=)' || true
-    python - <<'PY'
-import torch
-print("PyTorch:", torch.__version__, " CUDA:", torch.version.cuda)
-PY
-    echo ""
-    
     echo "== Launch Command =="
-    printf ' %q' "${LAUNCH_CMD[@]}"
+    printf ' %q' "${launch_cmd[@]}"
     echo
-    echo ""
-    
-    echo "== Training Output =="
-    "${LAUNCH_CMD[@]}" 2>&1
-    
-    TRAIN_EXIT_CODE=$?
     echo
-    echo "=========================================="
-    echo "Training finished at: $(date)"
-    echo "Exit code: $TRAIN_EXIT_CODE"
-    echo "=========================================="
-    
-    if [ $TRAIN_EXIT_CODE -eq 0 ]; then
-      echo "✅ 训练完成！"
-      
-      # 自动评估模型
-      echo ""
+    "${launch_cmd[@]}"
+    train_exit_code=$?
+    echo
+    echo "Training exit code: $train_exit_code"
+    if [[ $train_exit_code -eq 0 ]]; then
       echo "🎯 开始自动评估 ours 模型..."
-      
-      python3 auto_evaluate.py \
-          --model_type ours \
-          --config_file "$CONFIG_FILE" 2>&1
-      
-      EVAL_EXIT_CODE=$?
-      if [ $EVAL_EXIT_CODE -eq 0 ]; then
-        echo "✅ ours 评估完成！"
-        echo "📁 结果保存在: ./results/ours/"
-      else
-        echo "❌ ours 评估失败"
-      fi
-      
-      echo
-      echo "=========================================="
-      echo "All tasks finished at: $(date)"
-      echo "=========================================="
-      
-      return $EVAL_EXIT_CODE
+      python3 auto_evaluate.py --model_type ours --config_file "$config_file"
+      return $?
     else
       echo "❌ 训练失败"
-      return $TRAIN_EXIT_CODE
+      return $train_exit_code
     fi
-  } | tee "$LOG_FILE"
-  
+  } | tee "$log_file"
   return ${PIPESTATUS[0]}
 }
 
-# 前台或后台运行
-if [[ "$BACKGROUND" == "true" ]]; then
-  run_training_and_eval > "$LOG_FILE" 2>&1 &
-  BG_PID=$!
-  PID_FILE="${LOG_DIR}/ours_${TIMESTAMP}.pid"
-  echo $BG_PID > "$PID_FILE"
-  
+if $background; then
+  run_training_and_eval > "$log_file" 2>&1 &
+  bg_pid=$!
+  pid_file="$log_dir/ours_${timestamp}.pid"
+  {
+    echo "pid=$bg_pid"
+    echo "log=$log_file"
+    echo "config=$config_file"
+    [[ -n $custom_tag ]] && echo "tag=$custom_tag"
+    echo "settings<<EOF"
+    echo "$settings_snapshot"
+    echo "EOF"
+  } > "$pid_file"
   echo "✅ Training started in background"
-  echo "📝 Log: $LOG_FILE"
-  echo "🆔 PID: $BG_PID"
-  echo "📊 Monitor: tail -f $LOG_FILE"
+  echo "📝 Log: $log_file"
+  echo "🆔 PID: $bg_pid"
+  echo "📄 Settings recorded in: $pid_file"
 else
   run_training_and_eval
-  exit $?
 fi
+
 
