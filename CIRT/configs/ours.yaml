@@ -2,9 +2,9 @@ model_args:
     model_name: 'ours'
     input_size: 63
     output_size: 63
-    learning_rate: 0.0005
+    learning_rate: 0.001
     num_workers: 16
-    epochs: 20
+    epochs: 30
     t_max: 500
     pred_len: 2
     hidden_dim: 128
