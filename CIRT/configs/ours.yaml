@@ -4,7 +4,7 @@ model_args:
     output_size: 63
     learning_rate: 0.001
     num_workers: 16
-    epochs: 1
+    epochs: 20
     t_max: 500
     pred_len: 2
     hidden_dim: 128
