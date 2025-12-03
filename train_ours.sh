@@ -227,7 +227,67 @@ else
 fi
 launch_cmd+=("${common_args[@]}")
 
+find_checkpoint_by_config() {
+  local config_path="$1"
+  local start_time="$2"
+  
+  # 计算当前config文件的特征值（用于匹配）
+  local config_hash=$(md5sum "$config_path" 2>/dev/null | cut -d' ' -f1 || md5 -q "$config_path" 2>/dev/null)
+  
+  # 查找lightning_logs中所有version目录（按时间倒序，最新的在前）
+  local version_dirs=($(find lightning_logs -maxdepth 1 -type d -name "version_*" -printf '%T@ %p\n' 2>/dev/null | \
+                        sort -rn | cut -d' ' -f2- | head -20))
+  
+  # 如果find不支持-printf，使用ls
+  if [[ ${#version_dirs[@]} -eq 0 ]]; then
+    version_dirs=($(ls -td lightning_logs/version_* 2>/dev/null | head -20))
+  fi
+  
+  # 方法1: 通过config.yaml内容匹配（最可靠）
+  for version_dir in "${version_dirs[@]}"; do
+    local version_config="$version_dir/config.yaml"
+    if [[ -f "$version_config" ]]; then
+      local version_hash=$(md5sum "$version_config" 2>/dev/null | cut -d' ' -f1 || md5 -q "$version_config" 2>/dev/null)
+      
+      # 如果config文件内容相同
+      if [[ "$config_hash" == "$version_hash" ]]; then
+        # 查找该目录下的checkpoint
+        local checkpoints=($(find "$version_dir/checkpoints" -name "*.ckpt" -type f 2>/dev/null | sort -r))
+        if [[ ${#checkpoints[@]} -gt 0 ]]; then
+          echo "${checkpoints[0]}"
+          return 0
+        fi
+      fi
+    fi
+  done
+  
+  # 方法2: 通过时间戳匹配（如果config内容匹配失败）
+  for version_dir in "${version_dirs[@]}"; do
+    local version_config="$version_dir/config.yaml"
+    if [[ -f "$version_config" ]]; then
+      local version_mtime=$(stat -c %Y "$version_config" 2>/dev/null || stat -f %m "$version_config" 2>/dev/null)
+      
+      # 如果version的config.yaml创建时间在训练开始之后（允许5分钟误差）
+      if [[ -n "$version_mtime" && $version_mtime -ge $((start_time - 300)) ]]; then
+        local checkpoints=($(find "$version_dir/checkpoints" -name "*.ckpt" -type f 2>/dev/null | sort -r))
+        if [[ ${#checkpoints[@]} -gt 0 ]]; then
+          # 检查checkpoint的修改时间是否在训练开始之后
+          local ckpt_mtime=$(stat -c %Y "${checkpoints[0]}" 2>/dev/null || stat -f %m "${checkpoints[0]}" 2>/dev/null)
+          if [[ -n "$ckpt_mtime" && $ckpt_mtime -ge $start_time ]]; then
+            echo "${checkpoints[0]}"
+            return 0
+          fi
+        fi
+      fi
+    fi
+  done
+  
+  return 1
+}
+
 run_training_and_eval() {
+  local training_start_time=$(date +%s)
+  
   {
     echo "== Launch Command =="
     printf ' %q' "${launch_cmd[@]}"
@@ -237,10 +297,23 @@ run_training_and_eval() {
     train_exit_code=$?
     echo
     echo "Training exit code: $train_exit_code"
+    
     if [[ $train_exit_code -eq 0 ]]; then
-      echo "🎯 开始自动评估 ours 模型..."
-      python3 auto_evaluate.py --model_type ours --config_file "$config_file"
-      return $?
+      echo "🔍 查找当前训练任务对应的checkpoint..."
+      
+      # 查找对应的checkpoint
+      local found_checkpoint=$(find_checkpoint_by_config "$config_file" "$training_start_time")
+      
+      if [[ -n "$found_checkpoint" && -f "$found_checkpoint" ]]; then
+        echo "✅ 找到checkpoint: $found_checkpoint"
+        echo "🎯 开始自动评估 ours 模型..."
+        python3 auto_evaluate.py --model_type ours --config_file "$config_file" --checkpoint_path "$found_checkpoint"
+        return $?
+      else
+        echo "⚠️  未找到对应的checkpoint，使用自动查找模式..."
+        python3 auto_evaluate.py --model_type ours --config_file "$config_file"
+        return $?
+      fi
     else
       echo "❌ 训练失败"
       return $train_exit_code
@@ -257,6 +330,7 @@ if $background; then
     echo "pid=$bg_pid"
     echo "log=$log_file"
     echo "config=$config_file"
+    echo "start_time=$(date +%s)"
     [[ -n $custom_tag ]] && echo "tag=$custom_tag"
     echo "settings<<EOF"
     echo "$settings_snapshot"
