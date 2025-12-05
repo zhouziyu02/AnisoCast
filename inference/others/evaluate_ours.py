@@ -264,7 +264,11 @@ def main(args):
     metrics_df = calculate_metrics(all_pred, all_y, model_args, data_args, save_dir)
 
     # Save results
-    csv_filename = f"{model_args['model_name']}_metrics_{test_time}.csv"
+    # 如果提供了tag，在文件名中包含tag
+    if args.tag:
+        csv_filename = f"{model_args['model_name']}_metrics_{test_time}_{args.tag}.csv"
+    else:
+        csv_filename = f"{model_args['model_name']}_metrics_{test_time}.csv"
     csv_path = save_dir / csv_filename
     metrics_df.to_csv(csv_path, index=False)
     
@@ -302,6 +306,9 @@ if __name__ == "__main__":
     parser.add_argument('--output_dir',
                        default='./results',
                        help='Output directory for results (default: ./results)')
+    parser.add_argument('--tag',
+                       default=None,
+                       help='Custom tag to append to CSV filename (e.g., --tag exp1)')
     
     args = parser.parse_args()
     

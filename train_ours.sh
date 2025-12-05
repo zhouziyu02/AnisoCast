@@ -307,11 +307,19 @@ run_training_and_eval() {
       if [[ -n "$found_checkpoint" && -f "$found_checkpoint" ]]; then
         echo "✅ 找到checkpoint: $found_checkpoint"
         echo "🎯 开始自动评估 ours 模型..."
-        python3 auto_evaluate.py --model_type ours --config_file "$config_file" --checkpoint_path "$found_checkpoint"
+        if [[ -n "$custom_tag" ]]; then
+          python3 auto_evaluate.py --model_type ours --config_file "$config_file" --checkpoint_path "$found_checkpoint" --tag "$custom_tag"
+        else
+          python3 auto_evaluate.py --model_type ours --config_file "$config_file" --checkpoint_path "$found_checkpoint"
+        fi
         return $?
       else
         echo "⚠️  未找到对应的checkpoint，使用自动查找模式..."
-        python3 auto_evaluate.py --model_type ours --config_file "$config_file"
+        if [[ -n "$custom_tag" ]]; then
+          python3 auto_evaluate.py --model_type ours --config_file "$config_file" --tag "$custom_tag"
+        else
+          python3 auto_evaluate.py --model_type ours --config_file "$config_file"
+        fi
         return $?
       fi
     else
