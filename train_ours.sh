@@ -341,14 +341,19 @@ run_training_and_eval() {
 }
 
 if $background; then
-  run_training_and_eval > "$log_file" 2>&1 &
+  # 确保日志文件目录存在
+  mkdir -p "$(dirname "$log_file")"
+  # 创建空日志文件，确保它存在
+  touch "$log_file"
+  run_training_and_eval >> "$log_file" 2>&1 &
   bg_pid=$!
-  pid_file="$log_dir/ours_${timestamp}.pid"
+  pid_file="$log_dir/${model_name}_${timestamp}.pid"
   {
     echo "pid=$bg_pid"
     echo "log=$log_file"
     echo "config=$config_file"
     echo "start_time=$(date +%s)"
+    echo "model_name=$model_name"
     [[ -n $custom_tag ]] && echo "tag=$custom_tag"
     echo "settings<<EOF"
     echo "$settings_snapshot"
@@ -358,6 +363,7 @@ if $background; then
   echo "📝 Log: $log_file"
   echo "🆔 PID: $bg_pid"
   echo "📄 Settings recorded in: $pid_file"
+  echo "🔍 查看日志: tail -f $log_file"
 else
   run_training_and_eval
 fi
