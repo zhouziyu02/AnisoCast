@@ -29,6 +29,7 @@ np=${NP:-8}
 use_tensorboard=false
 background=true
 custom_tag=""
+model_name="ours"  # 默认使用ours模型，可设置为ost
 
 # 固定数据配置
 img_size_h=121
@@ -67,6 +68,7 @@ Options:
   --no-tensorboard                  禁用TensorBoard
   --foreground                      前台运行 (默认后台)
   --tag <string>                    自定义标签 (写入日志和PID)
+  --model-name <string>             模型名称 (ours 或 ost，默认: ours)
   -h, --help                        查看帮助
 EOF
 }
@@ -118,6 +120,8 @@ while [[ $# -gt 0 ]]; do
       background=true; shift ;;
     --tag)
       custom_tag="$2"; shift 2 ;;
+    --model-name)
+      model_name="$2"; shift 2 ;;
     *)
       echo "Unknown option: $arg" >&2
       usage
@@ -125,6 +129,12 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# 验证模型名称
+if [[ "$model_name" != "ours" && "$model_name" != "ost" ]]; then
+  echo "❌ 错误: 不支持的模型名称 '$model_name'。支持: ours, ost" >&2
+  exit 1
+fi
 
 array_to_yaml_list() {
   local arr=("$@")
@@ -150,12 +160,12 @@ str_array_to_yaml_list() {
 
 # 为当前运行生成时间戳，并在logs目录中创建稳定的配置文件路径
 timestamp=$(date +"%Y%m%d_%H%M%S")
-log_file="$log_dir/ours_${timestamp}.log"
-config_file="$log_dir/ours_${timestamp}.yaml"
+log_file="$log_dir/${model_name}_${timestamp}.log"
+config_file="$log_dir/${model_name}_${timestamp}.yaml"
 
 cat > "$config_file" <<EOF
 model_args:
-    model_name: 'ours'
+    model_name: '$model_name'
     input_size: $input_size
     output_size: $output_size
     learning_rate: $learning_rate
@@ -306,19 +316,19 @@ run_training_and_eval() {
       
       if [[ -n "$found_checkpoint" && -f "$found_checkpoint" ]]; then
         echo "✅ 找到checkpoint: $found_checkpoint"
-        echo "🎯 开始自动评估 ours 模型..."
+        echo "🎯 开始自动评估 $model_name 模型..."
         if [[ -n "$custom_tag" ]]; then
-          python3 auto_evaluate.py --model_type ours --config_file "$config_file" --checkpoint_path "$found_checkpoint" --tag "$custom_tag"
+          python3 auto_evaluate.py --model_type "$model_name" --config_file "$config_file" --checkpoint_path "$found_checkpoint" --tag "$custom_tag"
         else
-          python3 auto_evaluate.py --model_type ours --config_file "$config_file" --checkpoint_path "$found_checkpoint"
+          python3 auto_evaluate.py --model_type "$model_name" --config_file "$config_file" --checkpoint_path "$found_checkpoint"
         fi
         return $?
       else
         echo "⚠️  未找到对应的checkpoint，使用自动查找模式..."
         if [[ -n "$custom_tag" ]]; then
-          python3 auto_evaluate.py --model_type ours --config_file "$config_file" --tag "$custom_tag"
+          python3 auto_evaluate.py --model_type "$model_name" --config_file "$config_file" --tag "$custom_tag"
         else
-          python3 auto_evaluate.py --model_type ours --config_file "$config_file"
+          python3 auto_evaluate.py --model_type "$model_name" --config_file "$config_file"
         fi
         return $?
       fi

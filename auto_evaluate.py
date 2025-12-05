@@ -296,7 +296,8 @@ def auto_evaluate(model_type, config_file, checkpoint_path=None, tag=None):
         'EGNN': evaluate_egnn,
         'FNO': evaluate_fno,
         'Transformer': evaluate_transformer,
-        'ours': evaluate_ours
+        'ours': evaluate_ours,
+        'ost': evaluate_ours  # OST uses the same evaluation script as ours
     }
     
     if model_type not in evaluators:
@@ -306,8 +307,8 @@ def auto_evaluate(model_type, config_file, checkpoint_path=None, tag=None):
     
     # 运行评估
     evaluator = evaluators[model_type]
-    # 只有ours模型支持tag参数
-    if model_type == 'ours':
+    # ours和ost模型支持tag参数
+    if model_type == 'ours' or model_type == 'ost':
         success = evaluator(config_file, checkpoint_path, tag=tag)
     else:
         success = evaluator(config_file, checkpoint_path)
@@ -323,7 +324,7 @@ def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='自动评估模型')
     parser.add_argument('--model_type', required=True, 
-                       choices=['CirT', 'ClimODE', 'ClimaX', 'ViT', 'EGNN', 'FNO', 'Transformer','ours'],
+                       choices=['CirT', 'ClimODE', 'ClimaX', 'ViT', 'EGNN', 'FNO', 'Transformer','ours', 'ost'],
                        help='模型类型')
     parser.add_argument('--config_file', required=True,
                        help='配置文件路径')
