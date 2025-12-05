@@ -191,7 +191,7 @@ def evaluate_transformer(config_file, checkpoint_path):
 
 
 
-def evaluate_ours(config_file, checkpoint_path):
+def evaluate_ours(config_file, checkpoint_path, tag=None):
     """
     评估ours模型
     """
@@ -218,6 +218,9 @@ def evaluate_ours(config_file, checkpoint_path):
         "--config_filepath", config_file,
         "--checkpoint_path", checkpoint_path
     ]
+    
+    if tag:
+        cmd.extend(["--tag", tag])
     
     print(f"🚀 执行命令: {' '.join(cmd)}")
     
@@ -263,7 +266,7 @@ def evaluate_ours(config_file, checkpoint_path):
 
     
 
-def auto_evaluate(model_type, config_file, checkpoint_path=None):
+def auto_evaluate(model_type, config_file, checkpoint_path=None, tag=None):
     """
     自动评估指定模型
     """
@@ -303,7 +306,11 @@ def auto_evaluate(model_type, config_file, checkpoint_path=None):
     
     # 运行评估
     evaluator = evaluators[model_type]
-    success = evaluator(config_file, checkpoint_path)
+    # 只有ours模型支持tag参数
+    if model_type == 'ours':
+        success = evaluator(config_file, checkpoint_path, tag=tag)
+    else:
+        success = evaluator(config_file, checkpoint_path)
     
     if success:
         print(f"🎉 {model_type} 模型评估完成！")
@@ -322,6 +329,8 @@ def main():
                        help='配置文件路径')
     parser.add_argument('--checkpoint_path', 
                        help='checkpoint文件路径（可选，不提供则自动查找）')
+    parser.add_argument('--tag',
+                       help='自定义标签（用于CSV文件名）')
     
     args = parser.parse_args()
     
@@ -331,7 +340,7 @@ def main():
         sys.exit(1)
     
     # 运行自动评估
-    success = auto_evaluate(args.model_type, args.config_file, args.checkpoint_path)
+    success = auto_evaluate(args.model_type, args.config_file, args.checkpoint_path, tag=args.tag)
     
     if success:
         print("\n✅ 自动评估完成！")
