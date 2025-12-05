@@ -252,12 +252,24 @@ def main(args):
     model_args = hyperparams['model_args']
     data_args = hyperparams['data_args']
 
-    # Create save directory
-    save_dir = Path(f"./results/{model_args['model_name']}")
-    save_dir.mkdir(parents=True, exist_ok=True)
-
     # Load model and generate predictions
+    # 注意：load_model_and_predict 可能会从checkpoint的hyper_parameters中覆盖model_args
     all_pred, all_y = load_model_and_predict(model_args, data_args, checkpoint_path)
+    
+    # 重新读取最终的model_name（可能已被checkpoint覆盖）
+    # 从checkpoint的hyper_parameters中读取，确保使用训练时的实际model_name
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    final_model_name = model_args['model_name']  # 默认使用配置文件中的
+    if 'hyper_parameters' in checkpoint and 'model_args' in checkpoint['hyper_parameters']:
+        final_model_name = checkpoint['hyper_parameters']['model_args'].get('model_name', model_args['model_name'])
+        print(f"📌 使用checkpoint中的model_name: {final_model_name}")
+    
+    # Create save directory using the final model_name
+    save_dir = Path(f"./results/{final_model_name}")
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 更新model_args中的model_name，确保CSV文件名正确
+    model_args['model_name'] = final_model_name
 
     # Calculate metrics
     print("\nCalculating comprehensive metrics...")
