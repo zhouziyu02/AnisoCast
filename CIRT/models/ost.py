@@ -310,17 +310,17 @@ class Model(nn.Module):
         preds = self.unpatchify(preds)
         return preds
 
-if __name__ == "__main__":
-    print("Initializing Operator-Splitting Transformer (OST)...")
-    model = Model(
-        img_size=[121, 240], 
-        input_size=63, 
-        embed_dim=128, 
-        depth=2, 
-        num_heads=4
-    )
-    model.eval()
-    x = torch.randn(2, 63, 121, 240)
-    y = model(x)
-    print(f"Input: {x.shape}, Output: {y.shape}")
+# if __name__ == "__main__":
+#     print("Initializing Operator-Splitting Transformer (OST)...")
+#     model = Model(
+#         img_size=[121, 240], 
+#         input_size=63, 
+#         embed_dim=128, 
+#         depth=2, 
+#         num_heads=4
+#     )
+#     model.eval()
+#     x = torch.randn(2, 63, 121, 240)
+#     y = model(x)
+#     print(f"Input: {x.shape}, Output: {y.shape}")
 
