@@ -163,7 +163,11 @@ def main(args):
     print(f"✅ 训练完成时间 (UTC+8): {end_time}")
     print("Total training time: {:.4f}s".format(total_training_time))
     
-    trainer.test(baseline, ckpt_path="best")
+    # 注意：不在训练脚本中直接测试，因为：
+    # 1. DDP模式下测试可能导致DataLoader worker意外退出
+    # 2. train_ours.sh 会在训练完成后自动调用 auto_evaluate.py 进行评估
+    # 3. evaluate_ours.py 使用单设备进行评估，更适合测试场景
+    # trainer.test(baseline, ckpt_path="best")
 
     
 
