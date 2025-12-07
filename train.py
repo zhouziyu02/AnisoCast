@@ -165,10 +165,11 @@ def main(args):
         max_epochs=model_args['epochs'],
         logger=tb_logger,
         callbacks=callbacks_list,
-        enable_progress_bar=False if progress_bar_callback else enable_progress_bar,  # 如果使用自定义进度条，禁用默认的
-        enable_model_summary=True,  # 启用模型摘要（参数统计信息）
+        enable_progress_bar=enable_progress_bar,  # ✅ 不要因为你手动加了TQDMProgressBar就设False
+        enable_model_summary=True,
         precision=precision,
-     )
+    )
+
 
     # 开始训练
     training_start_time = time.time()
@@ -178,9 +179,6 @@ def main(args):
     print(f"🕐 当前时间 (UTC+8): {current_time}")
     print("🚀 开始训练...")
     
-    # 在DDP模式下，确保模型摘要只在rank 0打印
-    # 通过设置环境变量或使用trainer的summary方法
-    import os
     if 'RANK' in os.environ:
         rank = int(os.environ.get('RANK', '0'))
         if rank == 0:
