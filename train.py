@@ -1,5 +1,14 @@
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3,4,5,6,7'
+# 设置环境变量，避免tqdm进度条重复输出
+os.environ['TQDM_DISABLE'] = '0'  # 保持启用tqdm
+import sys
+# 设置stdout为行缓冲模式，避免进度条刷新时的重复输出
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except:
+        pass
 import argparse
 from pathlib import Path
 import yaml
@@ -133,14 +142,30 @@ def main(args):
 
     print(f"Trainer config -> accelerator={accelerator}, devices={devices}, strategy={strategy}, precision={precision}")
 
+    # 使用自定义进度条回调，避免重复输出
+    # 在DDP模式下，TQDMProgressBar会自动处理只在rank 0显示
+    progress_bar_callback = None
+    if enable_progress_bar:
+        try:
+            from lightning.pytorch.callbacks import TQDMProgressBar
+            # 使用TQDMProgressBar，它会自动处理DDP模式下的输出
+            progress_bar_callback = TQDMProgressBar(refresh_rate=1)
+        except ImportError:
+            # 如果TQDMProgressBar不可用，使用默认进度条
+            pass
+    
+    callbacks_list = [checkpoint_callback, speed_callback, config_saver]
+    if progress_bar_callback:
+        callbacks_list.append(progress_bar_callback)
+    
     trainer = pl.Trainer(
         devices=devices,
         accelerator=accelerator,
         strategy=strategy,
         max_epochs=model_args['epochs'],
         logger=tb_logger,
-        callbacks=[checkpoint_callback, speed_callback, config_saver],
-        enable_progress_bar=enable_progress_bar,  # 在DDP模式下只在rank 0显示
+        callbacks=callbacks_list,
+        enable_progress_bar=False if progress_bar_callback else enable_progress_bar,  # 如果使用自定义进度条，禁用默认的
         enable_model_summary=True,  # 启用模型摘要（参数统计信息）
         precision=precision,
      )
