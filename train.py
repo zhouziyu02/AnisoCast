@@ -45,25 +45,15 @@ def main(args):
     # Initialize training
     log_dir = Path('logs') / model_args['model_name']
     
-    # 创建checkpoint目录并保存配置副本（解决并行训练时的参数读取混乱问题）
-    # Lightning会自动创建version目录，我们在这里保存配置到lightning_logs根目录
-    # 实际checkpoint会保存在version_X/checkpoints/下
-    config_backup_dir = Path('lightning_logs')
-    config_backup_dir.mkdir(exist_ok=True)
-    
-    # 保存配置副本（带时间戳，避免覆盖）
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    config_backup_path = config_backup_dir / f"config_{model_args['model_name']}_{timestamp}.yaml"
-    with open(config_backup_path, 'w') as f:
-        yaml.dump(hyperparams, f, default_flow_style=False, sort_keys=False)
-    print(f"💾 配置已保存到: {config_backup_path}")
-    
+    # ModelCheckpoint配置
+    # save_top_k=1: 只保存val_loss最小的1个checkpoint（最佳模型）
+    # save_last=False: 不保存最后一个epoch的checkpoint，只保留最佳模型
     checkpoint_callback = ModelCheckpoint(
         monitor='val_loss', 
         mode='min',
         filename='{epoch}-{step}',
         save_top_k=1,
-        save_last=True
+        save_last=False  # 只保存最佳模型，不保存last.ckpt
     )
     
     # 创建一个自定义回调，在checkpoint保存时也保存配置副本

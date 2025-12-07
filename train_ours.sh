@@ -264,6 +264,13 @@ find_checkpoint_by_config() {
       # 如果config文件内容相同
       if [[ "$config_hash" == "$version_hash" ]]; then
         # 查找该目录下的checkpoint
+        # 优先查找最佳checkpoint（排除last.ckpt，因为现在只保存最佳模型）
+        local best_checkpoint=$(find "$version_dir/checkpoints" -name "epoch=*-step=*.ckpt" -type f 2>/dev/null | sort -r | head -1)
+        if [[ -n "$best_checkpoint" && -f "$best_checkpoint" ]]; then
+          echo "$best_checkpoint"
+          return 0
+        fi
+        # 如果没有找到epoch=*-step=*.ckpt格式的，回退到查找所有.ckpt文件
         local checkpoints=($(find "$version_dir/checkpoints" -name "*.ckpt" -type f 2>/dev/null | sort -r))
         if [[ ${#checkpoints[@]} -gt 0 ]]; then
           echo "${checkpoints[0]}"
@@ -281,6 +288,16 @@ find_checkpoint_by_config() {
       
       # 如果version的config.yaml创建时间在训练开始之后（允许5分钟误差）
       if [[ -n "$version_mtime" && $version_mtime -ge $((start_time - 300)) ]]; then
+        # 优先查找最佳checkpoint（排除last.ckpt）
+        local best_checkpoint=$(find "$version_dir/checkpoints" -name "epoch=*-step=*.ckpt" -type f 2>/dev/null | sort -r | head -1)
+        if [[ -n "$best_checkpoint" && -f "$best_checkpoint" ]]; then
+          local ckpt_mtime=$(stat -c %Y "$best_checkpoint" 2>/dev/null || stat -f %m "$best_checkpoint" 2>/dev/null)
+          if [[ -n "$ckpt_mtime" && $ckpt_mtime -ge $start_time ]]; then
+            echo "$best_checkpoint"
+            return 0
+          fi
+        fi
+        # 如果没有找到epoch=*-step=*.ckpt格式的，回退到查找所有.ckpt文件
         local checkpoints=($(find "$version_dir/checkpoints" -name "*.ckpt" -type f 2>/dev/null | sort -r))
         if [[ ${#checkpoints[@]} -gt 0 ]]; then
           # 检查checkpoint的修改时间是否在训练开始之后
