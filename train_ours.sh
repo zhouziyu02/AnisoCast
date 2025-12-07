@@ -160,10 +160,13 @@ str_array_to_yaml_list() {
   printf '%s' "$result"
 }
 
-# 为当前运行生成时间戳，并在logs目录中创建稳定的配置文件路径
+# 为当前运行生成时间戳，并按模型名创建子目录
 timestamp=$(date +"%Y%m%d_%H%M%S")
-log_file="$log_dir/${model_name}_${timestamp}.log"
-config_file="$log_dir/${model_name}_${timestamp}.yaml"
+model_log_dir="$log_dir/$model_name"
+mkdir -p "$model_log_dir"
+log_file="$model_log_dir/${model_name}_${timestamp}.log"
+config_file="$model_log_dir/${model_name}_${timestamp}.yaml"
+pid_file="$model_log_dir/${model_name}_${timestamp}.pid"
 
 cat > "$config_file" <<EOF
 model_args:
@@ -242,9 +245,13 @@ launch_cmd+=("${common_args[@]}")
 find_checkpoint_by_config() {
   local config_path="$1"
   local start_time="$2"
+  local expected_model_name="$3"  # 新增：期望的模型名称
   
   # 计算当前config文件的特征值（用于匹配）
   local config_hash=$(md5sum "$config_path" 2>/dev/null | cut -d' ' -f1 || md5 -q "$config_path" 2>/dev/null)
+  
+  # 从config文件中提取model_name（用于双重验证）
+  local config_model_name=$(grep -E "^model_name:" "$config_path" 2>/dev/null | head -1 | sed -E "s/.*model_name:[[:space:]]*['\"]?([^'\"]+)['\"]?.*/\1/" | tr -d ' ')
   
   # 查找lightning_logs中所有version目录（按时间倒序，最新的在前）
   local version_dirs=($(find lightning_logs -maxdepth 1 -type d -name "version_*" -printf '%T@ %p\n' 2>/dev/null | \
@@ -255,7 +262,7 @@ find_checkpoint_by_config() {
     version_dirs=($(ls -td lightning_logs/version_* 2>/dev/null | head -20))
   fi
   
-  # 方法1: 通过config.yaml内容匹配（最可靠）
+  # 方法1: 通过config.yaml内容匹配 + model_name验证 + 时间戳验证（最可靠）
   for version_dir in "${version_dirs[@]}"; do
     local version_config="$version_dir/config.yaml"
     if [[ -f "$version_config" ]]; then
@@ -263,24 +270,47 @@ find_checkpoint_by_config() {
       
       # 如果config文件内容相同
       if [[ "$config_hash" == "$version_hash" ]]; then
+        # 验证version目录中的model_name是否匹配（双重验证）
+        local version_model_name=$(grep -E "^model_name:" "$version_config" 2>/dev/null | head -1 | sed -E "s/.*model_name:[[:space:]]*['\"]?([^'\"]+)['\"]?.*/\1/" | tr -d ' ')
+        
+        # 如果提供了期望的model_name，必须匹配
+        if [[ -n "$expected_model_name" && -n "$version_model_name" ]]; then
+          if [[ "$expected_model_name" != "$version_model_name" ]]; then
+            continue  # model_name不匹配，跳过这个version目录
+          fi
+        fi
+        
+        # 验证时间戳：config.yaml的创建时间应该在训练开始之后（允许5分钟误差）
+        local version_mtime=$(stat -c %Y "$version_config" 2>/dev/null || stat -f %m "$version_config" 2>/dev/null)
+        if [[ -n "$version_mtime" && $version_mtime -lt $((start_time - 300)) ]]; then
+          continue  # 时间戳不匹配，跳过
+        fi
+        
         # 查找该目录下的checkpoint
         # 优先查找最佳checkpoint（排除last.ckpt，因为现在只保存最佳模型）
         local best_checkpoint=$(find "$version_dir/checkpoints" -name "epoch=*-step=*.ckpt" -type f 2>/dev/null | sort -r | head -1)
         if [[ -n "$best_checkpoint" && -f "$best_checkpoint" ]]; then
-          echo "$best_checkpoint"
-          return 0
+          # 验证checkpoint的修改时间应该在训练开始之后
+          local ckpt_mtime=$(stat -c %Y "$best_checkpoint" 2>/dev/null || stat -f %m "$best_checkpoint" 2>/dev/null)
+          if [[ -n "$ckpt_mtime" && $ckpt_mtime -ge $start_time ]]; then
+            echo "$best_checkpoint"
+            return 0
+          fi
         fi
         # 如果没有找到epoch=*-step=*.ckpt格式的，回退到查找所有.ckpt文件
         local checkpoints=($(find "$version_dir/checkpoints" -name "*.ckpt" -type f 2>/dev/null | sort -r))
         if [[ ${#checkpoints[@]} -gt 0 ]]; then
-          echo "${checkpoints[0]}"
-          return 0
+          local ckpt_mtime=$(stat -c %Y "${checkpoints[0]}" 2>/dev/null || stat -f %m "${checkpoints[0]}" 2>/dev/null)
+          if [[ -n "$ckpt_mtime" && $ckpt_mtime -ge $start_time ]]; then
+            echo "${checkpoints[0]}"
+            return 0
+          fi
         fi
       fi
     fi
   done
   
-  # 方法2: 通过时间戳匹配（如果config内容匹配失败）
+  # 方法2: 通过时间戳 + model_name匹配（如果config内容匹配失败）
   for version_dir in "${version_dirs[@]}"; do
     local version_config="$version_dir/config.yaml"
     if [[ -f "$version_config" ]]; then
@@ -288,6 +318,14 @@ find_checkpoint_by_config() {
       
       # 如果version的config.yaml创建时间在训练开始之后（允许5分钟误差）
       if [[ -n "$version_mtime" && $version_mtime -ge $((start_time - 300)) ]]; then
+        # 验证model_name是否匹配
+        if [[ -n "$expected_model_name" ]]; then
+          local version_model_name=$(grep -E "^model_name:" "$version_config" 2>/dev/null | head -1 | sed -E "s/.*model_name:[[:space:]]*['\"]?([^'\"]+)['\"]?.*/\1/" | tr -d ' ')
+          if [[ -n "$version_model_name" && "$expected_model_name" != "$version_model_name" ]]; then
+            continue  # model_name不匹配，跳过
+          fi
+        fi
+        
         # 优先查找最佳checkpoint（排除last.ckpt）
         local best_checkpoint=$(find "$version_dir/checkpoints" -name "epoch=*-step=*.ckpt" -type f 2>/dev/null | sort -r | head -1)
         if [[ -n "$best_checkpoint" && -f "$best_checkpoint" ]]; then
@@ -316,22 +354,60 @@ find_checkpoint_by_config() {
 
 run_training_and_eval() {
   local training_start_time=$(date +%s)
+  local checkpoint_version_dir=""  # 用于存储checkpoint的version目录路径
+  local checkpoint_info_file="$config_file.checkpoint_dir"
+  
+  # 清理可能存在的旧文件
+  rm -f "$checkpoint_info_file"
   
   {
     echo "== Launch Command =="
     printf ' %q' "${launch_cmd[@]}"
     echo
     echo
-    "${launch_cmd[@]}"
-    train_exit_code=$?
+    # 运行训练命令，同时捕获checkpoint路径
+    "${launch_cmd[@]}" 2>&1 | tee >(while IFS= read -r line; do
+      echo "$line"
+      # 从训练输出中提取checkpoint目录路径
+      if [[ "$line" =~ 💾.*配置已保存到checkpoint目录:\ ([^[:space:]]+) ]]; then
+        local extracted_path="${BASH_REMATCH[1]}"
+        # 如果是config.yaml路径，转换为version目录
+        extracted_path="${extracted_path%/config.yaml}"
+        echo "$extracted_path" > "$checkpoint_info_file"
+      fi
+    done)
+    train_exit_code=${PIPESTATUS[0]}
     echo
     echo "Training exit code: $train_exit_code"
     
+    # 读取保存的checkpoint目录路径
+    if [[ -f "$checkpoint_info_file" ]]; then
+      checkpoint_version_dir=$(cat "$checkpoint_info_file" 2>/dev/null)
+      rm -f "$checkpoint_info_file"
+    fi
+    
     if [[ $train_exit_code -eq 0 ]]; then
       echo "🔍 查找当前训练任务对应的checkpoint..."
+      echo "📋 期望的模型名称: $model_name"
       
-      # 查找对应的checkpoint
-      local found_checkpoint=$(find_checkpoint_by_config "$config_file" "$training_start_time")
+      local found_checkpoint=""
+      
+      # 方法1: 如果从训练日志中提取到了checkpoint目录，直接使用
+      if [[ -n "$checkpoint_version_dir" && -d "$checkpoint_version_dir" ]]; then
+        echo "📁 使用训练时保存的checkpoint目录: $checkpoint_version_dir"
+        # 查找该目录下的最佳checkpoint
+        found_checkpoint=$(find "$checkpoint_version_dir/checkpoints" -name "epoch=*-step=*.ckpt" -type f 2>/dev/null | sort -r | head -1)
+        if [[ -z "$found_checkpoint" || ! -f "$found_checkpoint" ]]; then
+          # 如果没有找到epoch=*-step=*.ckpt格式的，查找所有.ckpt文件
+          found_checkpoint=$(find "$checkpoint_version_dir/checkpoints" -name "*.ckpt" -type f 2>/dev/null | sort -r | head -1)
+        fi
+      fi
+      
+      # 方法2: 如果方法1失败，使用原来的查找逻辑
+      if [[ -z "$found_checkpoint" || ! -f "$found_checkpoint" ]]; then
+        echo "⚠️  未从训练日志中提取到checkpoint路径，使用自动查找模式..."
+        found_checkpoint=$(find_checkpoint_by_config "$config_file" "$training_start_time" "$model_name")
+      fi
       
       if [[ -n "$found_checkpoint" && -f "$found_checkpoint" ]]; then
         echo "✅ 找到checkpoint: $found_checkpoint"
@@ -364,9 +440,10 @@ if $background; then
   mkdir -p "$(dirname "$log_file")"
   # 创建空日志文件，确保它存在
   touch "$log_file"
-  run_training_and_eval >> "$log_file" 2>&1 &
+  # 后台运行时，run_training_and_eval内部已经使用tee写入日志，这里直接重定向
+  run_training_and_eval &
   bg_pid=$!
-  pid_file="$log_dir/${model_name}_${timestamp}.pid"
+  # pid_file已经在上面定义了，使用model_log_dir下的路径
   {
     echo "pid=$bg_pid"
     echo "log=$log_file"

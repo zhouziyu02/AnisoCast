@@ -282,20 +282,29 @@ def main(args):
     model_args['model_name'] = final_model_name
     
     # Create save directory using the final model_name
+    # 保存到 ./results/{model_name}/ 目录（与logs、lightning_logs同级）
     save_dir = Path(f"./results/{final_model_name}")
     save_dir.mkdir(parents=True, exist_ok=True)
     print(f"📁 结果将保存到: {save_dir.absolute()}")
+    
+    # 验证：确保使用的model_name与checkpoint中的一致
+    print(f"🔍 验证信息:")
+    print(f"   - 最终使用的model_name: {final_model_name}")
+    print(f"   - 保存目录: {save_dir}")
+    if args.tag:
+        print(f"   - 提供的tag: {args.tag}")
 
     # Calculate metrics
     print("\nCalculating comprehensive metrics...")
     metrics_df = calculate_metrics(all_pred, all_y, model_args, data_args, save_dir)
 
     # Save results
+    # 使用final_model_name而不是model_args['model_name']，确保文件名正确
     # 如果提供了tag，在文件名中包含tag
     if args.tag:
-        csv_filename = f"{model_args['model_name']}_metrics_{test_time}_{args.tag}.csv"
+        csv_filename = f"{final_model_name}_metrics_{test_time}_{args.tag}.csv"
     else:
-        csv_filename = f"{model_args['model_name']}_metrics_{test_time}.csv"
+        csv_filename = f"{final_model_name}_metrics_{test_time}.csv"
     csv_path = save_dir / csv_filename
     metrics_df.to_csv(csv_path, index=False)
     
