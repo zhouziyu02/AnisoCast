@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+export NCCL_SOCKET_IFNAME=lo
+export NCCL_SOCKET_FAMILY=AF_INET
 
 set -euo pipefail
 
