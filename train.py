@@ -102,6 +102,12 @@ def main(args):
     
     config_saver = ConfigSaverCallback(args.config_filepath, hyperparams)
     
+    # 在DDP模式下，只在rank 0打印信息，避免重复输出
+    is_rank_zero = True
+    if 'RANK' in os.environ:
+        rank = int(os.environ.get('RANK', '0'))
+        is_rank_zero = (rank == 0)
+    
     # 根据参数决定是否使用TensorBoard
     tb_logger = None
     if args.use_tensorboard:
@@ -110,9 +116,11 @@ def main(args):
             log_graph=False,
             default_hp_metric=False,
         )
-        print("📊 TensorBoard日志已启用")
+        if is_rank_zero:
+            print("📊 TensorBoard日志已启用")
     else:
-        print("🚀 使用最高性能模式（禁用TensorBoard）")
+        if is_rank_zero:
+            print("🚀 使用最高性能模式（禁用TensorBoard）")
     
     # 创建训练速度监控回调
     speed_callback = TrainingSpeedCallback(log_every_n_steps=10)  # 每50个step打印一次，减少输出频率
@@ -140,7 +148,8 @@ def main(args):
     else:
         enable_progress_bar = True  # 非DDP模式，显示进度条
 
-    print(f"Trainer config -> accelerator={accelerator}, devices={devices}, strategy={strategy}, precision={precision}")
+    if is_rank_zero:
+        print(f"Trainer config -> accelerator={accelerator}, devices={devices}, strategy={strategy}, precision={precision}")
 
     # 使用自定义进度条回调，避免重复输出
     # 在DDP模式下，TQDMProgressBar会自动处理只在rank 0显示
@@ -174,27 +183,15 @@ def main(args):
     # 开始训练
     training_start_time = time.time()
     
-    # 打印当前UTC+8时间
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"🕐 当前时间 (UTC+8): {current_time}")
-    print("🚀 开始训练...")
+    # 打印当前UTC+8时间（只在rank 0打印，避免重复输出）
+    if is_rank_zero:
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"🕐 当前时间 (UTC+8): {current_time}")
+        print("🚀 开始训练...")
     
-    if 'RANK' in os.environ:
-        rank = int(os.environ.get('RANK', '0'))
-        if rank == 0:
-            # 只在rank 0打印模型摘要
-            print("\n" + "="*80)
-            print("📊 模型参数统计:")
-            print("="*80)
-            trainer.print_summary()
-            print("="*80 + "\n")
-    else:
-        # 非DDP模式，直接打印
-        print("\n" + "="*80)
-        print("📊 模型参数统计:")
-        print("="*80)
-        trainer.print_summary()
-        print("="*80 + "\n")
+    # 模型摘要会在训练开始时自动打印（因为enable_model_summary=True）
+    # 不需要手动调用print_summary()，Lightning会自动处理
+    # 在DDP模式下，模型摘要会自动只在rank 0打印
     
     trainer.fit(baseline)
     training_end_time = time.time()
