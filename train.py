@@ -123,6 +123,14 @@ def main(args):
     # precision：GPU默认16-mixed，CPU固定32
     precision = getattr(args, 'precision', None) or ('16-mixed' if accelerator == 'gpu' else '32-true')
 
+    # 在DDP模式下，只在rank 0显示进度条，避免多进程输出混乱
+    import os
+    if 'RANK' in os.environ:
+        rank = int(os.environ.get('RANK', '0'))
+        enable_progress_bar = (rank == 0)  # 只在rank 0显示进度条
+    else:
+        enable_progress_bar = True  # 非DDP模式，显示进度条
+
     print(f"Trainer config -> accelerator={accelerator}, devices={devices}, strategy={strategy}, precision={precision}")
 
     trainer = pl.Trainer(
@@ -132,7 +140,7 @@ def main(args):
         max_epochs=model_args['epochs'],
         logger=tb_logger,
         callbacks=[checkpoint_callback, speed_callback, config_saver],
-        enable_progress_bar=True,
+        enable_progress_bar=enable_progress_bar,  # 在DDP模式下只在rank 0显示
         enable_model_summary=True,  # 启用模型摘要（参数统计信息）
         precision=precision,
      )
