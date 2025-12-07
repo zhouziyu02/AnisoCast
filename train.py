@@ -133,6 +133,7 @@ def main(args):
         logger=tb_logger,
         callbacks=[checkpoint_callback, speed_callback, config_saver],
         enable_progress_bar=True,
+        enable_model_summary=True,  # 启用模型摘要（参数统计信息）
         precision=precision,
      )
 
@@ -143,6 +144,26 @@ def main(args):
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"🕐 当前时间 (UTC+8): {current_time}")
     print("🚀 开始训练...")
+    
+    # 在DDP模式下，确保模型摘要只在rank 0打印
+    # 通过设置环境变量或使用trainer的summary方法
+    import os
+    if 'RANK' in os.environ:
+        rank = int(os.environ.get('RANK', '0'))
+        if rank == 0:
+            # 只在rank 0打印模型摘要
+            print("\n" + "="*80)
+            print("📊 模型参数统计:")
+            print("="*80)
+            trainer.print_summary()
+            print("="*80 + "\n")
+    else:
+        # 非DDP模式，直接打印
+        print("\n" + "="*80)
+        print("📊 模型参数统计:")
+        print("="*80)
+        trainer.print_summary()
+        print("="*80 + "\n")
     
     trainer.fit(baseline)
     training_end_time = time.time()
