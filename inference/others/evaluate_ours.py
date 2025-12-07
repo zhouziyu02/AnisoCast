@@ -234,6 +234,15 @@ def main(args):
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found at: {checkpoint_path}")
     
+    # 首先从checkpoint的hyper_parameters中读取model_name（最准确，因为这是训练时实际使用的）
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    final_model_name = None
+    
+    if 'hyper_parameters' in checkpoint and 'model_args' in checkpoint['hyper_parameters']:
+        final_model_name = checkpoint['hyper_parameters']['model_args'].get('model_name')
+        if final_model_name:
+            print(f"📌 从checkpoint的hyper_parameters读取model_name: {final_model_name}")
+    
     # 优先从checkpoint目录读取配置（解决并行训练时的参数读取混乱问题）
     checkpoint_dir = Path(checkpoint_path).parent.parent  # checkpoint在version_X/checkpoints/下
     config_in_checkpoint = checkpoint_dir / 'config.yaml'
@@ -251,25 +260,31 @@ def main(args):
     
     model_args = hyperparams['model_args']
     data_args = hyperparams['data_args']
+    
+    # 确定最终的model_name：优先使用checkpoint的hyper_parameters中的，否则使用配置文件中的
+    if final_model_name:
+        config_model_name = model_args.get('model_name', 'unknown')
+        if final_model_name != config_model_name:
+            print(f"✅ 使用checkpoint中保存的model_name: {final_model_name} (覆盖配置文件中的: {config_model_name})")
+        else:
+            print(f"✅ 使用checkpoint中保存的model_name: {final_model_name} (与配置文件一致)")
+        model_args['model_name'] = final_model_name
+    else:
+        final_model_name = model_args.get('model_name', 'ours')
+        print(f"⚠️  checkpoint中未找到model_name，使用配置文件中的: {final_model_name}")
+        model_args['model_name'] = final_model_name
 
     # Load model and generate predictions
-    # 注意：load_model_and_predict 可能会从checkpoint的hyper_parameters中覆盖model_args
     all_pred, all_y = load_model_and_predict(model_args, data_args, checkpoint_path)
     
-    # 重新读取最终的model_name（可能已被checkpoint覆盖）
-    # 从checkpoint的hyper_parameters中读取，确保使用训练时的实际model_name
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    final_model_name = model_args['model_name']  # 默认使用配置文件中的
-    if 'hyper_parameters' in checkpoint and 'model_args' in checkpoint['hyper_parameters']:
-        final_model_name = checkpoint['hyper_parameters']['model_args'].get('model_name', model_args['model_name'])
-        print(f"📌 使用checkpoint中的model_name: {final_model_name}")
+    # 再次确认model_name（load_model_and_predict可能会修改model_args，但我们已经确定了final_model_name）
+    # 确保使用训练时保存的model_name，而不是load_model_and_predict内部可能修改的值
+    model_args['model_name'] = final_model_name
     
     # Create save directory using the final model_name
     save_dir = Path(f"./results/{final_model_name}")
     save_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 更新model_args中的model_name，确保CSV文件名正确
-    model_args['model_name'] = final_model_name
+    print(f"📁 结果将保存到: {save_dir.absolute()}")
 
     # Calculate metrics
     print("\nCalculating comprehensive metrics...")
