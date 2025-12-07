@@ -222,7 +222,7 @@ SET
 )
 
 echo "=========================================="
-echo "🚀 Ours 模型训练"
+echo "🚀 ${model_name} 模型训练"
 echo "=========================================="
 echo "$settings_snapshot"
 echo "=========================================="
@@ -440,8 +440,8 @@ if $background; then
   mkdir -p "$(dirname "$log_file")"
   # 创建空日志文件，确保它存在
   touch "$log_file"
-  # 后台运行时，run_training_and_eval内部已经使用tee写入日志，这里直接重定向
-  run_training_and_eval &
+  # 后台运行时，所有输出重定向到日志文件，不打印到终端
+  run_training_and_eval > "$log_file" 2>&1 &
   bg_pid=$!
   # pid_file已经在上面定义了，使用model_log_dir下的路径
   {
@@ -455,6 +455,7 @@ if $background; then
     echo "$settings_snapshot"
     echo "EOF"
   } > "$pid_file"
+  # 只在终端显示启动信息，不显示训练输出
   echo "✅ Training started in background"
   echo "📝 Log: $log_file"
   echo "🆔 PID: $bg_pid"

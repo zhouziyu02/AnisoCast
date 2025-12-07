@@ -133,7 +133,7 @@ def main(args):
     precision = getattr(args, 'precision', None) or ('16-mixed' if accelerator == 'gpu' else '32-true')
 
     # 在DDP模式下，只在rank 0显示进度条，避免多进程输出混乱
-    import os
+    # os已经在文件开头导入，不需要重新导入
     if 'RANK' in os.environ:
         rank = int(os.environ.get('RANK', '0'))
         enable_progress_bar = (rank == 0)  # 只在rank 0显示进度条
