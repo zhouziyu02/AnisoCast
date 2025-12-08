@@ -192,6 +192,7 @@ model_args:
     patch_size: $patch_size
     learning_rate: $learning_rate
     weight_decay: $weight_decay
+    num_workers: $num_workers
     epochs: $epochs
     t_max: $t_max
     pred_len: $pred_len
