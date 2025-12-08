@@ -7,7 +7,7 @@ echo "🔍 检查Python环境..."
 python3 --version
 
 # 检查检查点文件是否存在
-CHECKPOINT_PATH="/mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/lightning_logs/version_184/checkpoints/epoch=13-step=770.ckpt"
+CHECKPOINT_PATH="/mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/lightning_logs/version_196/checkpoints/epoch=13-step=770.ckpt"
 if [ ! -f "$CHECKPOINT_PATH" ]; then
     echo "❌ 检查点文件不存在: $CHECKPOINT_PATH"
     echo "请确认检查点文件路径是否正确"
