@@ -74,7 +74,7 @@ Options:
   --no-tensorboard                  禁用TensorBoard
   --foreground                      前台运行 (默认后台)
   --tag <string>                    自定义标签 (写入日志和PID)
-  --model-name <string>             模型名称 (ours 或 ost，默认: ours)
+  --model-name <string>             模型名称 (ours / ost / CirT，默认: ours)
   -h, --help                        查看帮助
 EOF
 }
@@ -142,9 +142,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# 验证模型名称
-if [[ "$model_name" != "ours" && "$model_name" != "ost" ]]; then
-  echo "❌ 错误: 不支持的模型名称 '$model_name'。支持: ours, ost" >&2
+# 验证模型名称（支持 ours / ost / CirT）
+if [[ "$model_name" != "ours" && "$model_name" != "ost" && "$model_name" != "CirT" ]]; then
+  echo "❌ 错误: 不支持的模型名称 '$model_name'。支持: ours, ost, CirT" >&2
   exit 1
 fi
 
