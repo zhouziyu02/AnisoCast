@@ -56,13 +56,14 @@ class S2SBenchmarkModel(pl.LightningModule):
             self.model = OSTModel(
                 input_size=self.model_args['input_size'],
                 img_size=self.model_args.get('img_size', [121, 240]),
-                embed_dim=self.model_args.get('embed_dim', 768),
+                embed_dim=self.model_args.get('embed_dim', 256),
                 depth=self.model_args.get('depth', 8),
                 decoder_depth=self.model_args.get('decoder_depth', 2),
                 num_heads=self.model_args.get('num_heads', 16),
                 mlp_ratio=self.model_args.get('mlp_ratio', 4.0),
                 drop_path=self.model_args.get('drop_path', 0.1),
-                drop_rate=self.model_args.get('drop_rate', 0.1)
+                drop_rate=self.model_args.get('drop_rate', 0.1),
+                patch_size=self.model_args.get('patch_size', 124),
             )
 
         if 'egnn' in self.model_args['model_name'].lower():

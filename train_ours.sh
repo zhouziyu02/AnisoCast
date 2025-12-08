@@ -17,7 +17,8 @@ weight_decay="1e-5"
 epochs=20
 t_max=500
 grad_clip_norm=1.0
-embed_dim=768
+embed_dim=256
+patch_size=124
 depth=8
 decoder_depth=2
 num_heads=16
@@ -57,12 +58,15 @@ Options:
   --batch, --batch-size <int>       批次大小
   --epochs <int>                    训练轮数
   --embed, --embed-dim <int>        嵌入维度 (需能整除注意力头数)
+  --patch, --patch-size <int>       patch大小
   --depth <int>                     Transformer层数
   --decoder-depth <int>             解码器层数
   --heads, --num-heads <int>        注意力头数
   --mlp-ratio <float>               MLP扩展比例
   --drop-path <float>               DropPath率
   --drop-rate <float>               Dropout率
+  --pred-len <int>                  预测步长
+  --t-max <int>                     Cosine调度器T_max
   --weight-decay <float>            权重衰减
   --grad-clip <float>               梯度裁剪阈值
   --np <int>                        GPU数量
@@ -94,6 +98,8 @@ while [[ $# -gt 0 ]]; do
       epochs="$2"; shift 2 ;;
     --embed|--embed-dim)
       embed_dim="$2"; shift 2 ;;
+    --patch|--patch-size)
+      patch_size="$2"; shift 2 ;;
     --depth)
       depth="$2"; shift 2 ;;
     --decoder-depth)
@@ -106,6 +112,10 @@ while [[ $# -gt 0 ]]; do
       drop_path="$2"; shift 2 ;;
     --drop-rate)
       drop_rate="$2"; shift 2 ;;
+    --pred-len)
+      pred_len="$2"; shift 2 ;;
+    --t-max)
+      t_max="$2"; shift 2 ;;
     --weight-decay)
       weight_decay="$2"; shift 2 ;;
     --grad-clip)
@@ -168,20 +178,25 @@ log_file="$model_log_dir/${model_name}_${timestamp}.log"
 config_file="$model_log_dir/${model_name}_${timestamp}.yaml"
 pid_file="$model_log_dir/${model_name}_${timestamp}.pid"
 
+runtime_strategy="auto"
+if (( np > 1 )); then
+  runtime_strategy="ddp_find_unused_parameters_true"
+fi
+
 cat > "$config_file" <<EOF
 model_args:
     model_name: '$model_name'
     input_size: $input_size
     output_size: $output_size
+    img_size: [$img_size_h, $img_size_w]
+    patch_size: $patch_size
     learning_rate: $learning_rate
     weight_decay: $weight_decay
-    num_workers: $num_workers
     epochs: $epochs
     t_max: $t_max
     pred_len: $pred_len
     grad_clip_norm: $grad_clip_norm
     only_headline: False
-    img_size: [$img_size_h, $img_size_w]
     embed_dim: $embed_dim
     depth: $depth
     decoder_depth: $decoder_depth
@@ -192,6 +207,7 @@ model_args:
 
 data_args:
     batch_size: $batch_size
+    num_workers: $num_workers
     train_years: $(array_to_yaml_list "${train_years[@]}")
     test_years: $(array_to_yaml_list "${test_years[@]}")
     val_years: $(array_to_yaml_list "${val_years[@]}")
@@ -201,12 +217,33 @@ data_args:
     single_vars: $(str_array_to_yaml_list "${single_vars[@]}")
     pred_single_vars: $(str_array_to_yaml_list "${pred_single_vars[@]}")
     pred_pressure_vars: $(str_array_to_yaml_list "${pred_pressure_vars[@]}")
+
+train_args:
+    batch_size: $batch_size
+    learning_rate: $learning_rate
+    weight_decay: $weight_decay
+    grad_clip_norm: $grad_clip_norm
+    epochs: $epochs
+    t_max: $t_max
+    pred_len: $pred_len
+    drop_path: $drop_path
+    drop_rate: $drop_rate
+    use_tensorboard: $use_tensorboard
+
+runtime_args:
+    devices: $np
+    accelerator: gpu
+    strategy: $runtime_strategy
+    background: $background
+    tag: '$custom_tag'
+    launcher: '$self_name'
 EOF
 
 settings_snapshot=$(cat <<SET
 lr=$learning_rate
 batch_size=$batch_size
 epochs=$epochs
+patch_size=$patch_size
 embed_dim=$embed_dim
 depth=$depth
 decoder_depth=$decoder_depth
@@ -214,6 +251,8 @@ num_heads=$num_heads
 mlp_ratio=$mlp_ratio
 drop_path=$drop_path
 drop_rate=$drop_rate
+t_max=$t_max
+pred_len=$pred_len
 weight_decay=$weight_decay
 grad_clip_norm=$grad_clip_norm
 np=$np
