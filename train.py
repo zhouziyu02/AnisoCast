@@ -1,5 +1,5 @@
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3,4,5,6,7'
+# 保持用户/外部传入的 CUDA_VISIBLE_DEVICES，不在此强行覆盖
 # 设置环境变量，避免tqdm进度条重复输出
 os.environ['TQDM_DISABLE'] = '0'  # 保持启用tqdm
 import sys
