@@ -301,8 +301,11 @@ def main(args):
     # Save results
     # 使用final_model_name而不是model_args['model_name']，确保文件名正确
     # 如果提供了tag，在文件名中包含tag
+    # 清理tag中的路径分隔符，避免路径解析错误
     if args.tag:
-        csv_filename = f"{final_model_name}_metrics_{test_time}_{args.tag}.csv"
+        # 将tag中的路径分隔符替换为下划线，确保文件名安全
+        safe_tag = args.tag.replace('/', '_').replace('\\', '_')
+        csv_filename = f"{final_model_name}_metrics_{test_time}_{safe_tag}.csv"
     else:
         csv_filename = f"{final_model_name}_metrics_{test_time}.csv"
     csv_path = save_dir / csv_filename
