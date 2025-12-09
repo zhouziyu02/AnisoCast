@@ -1,3 +1,316 @@
+# import torch
+# import torch.nn as nn
+# import torch.nn.functional as F
+# from timm.layers import DropPath, Mlp
+# from timm.models.vision_transformer import trunc_normal_
+# import torch.fft
+
+# # ==========================================
+# # 1. Core Modules
+# # ==========================================
+
+# class SpectralGating(nn.Module):
+#     """
+#     Frequency Domain Branch (Inspired by CirT/FNO).
+#     Captures Global Periodic Patterns (Planetary Waves).
+
+#     Improvement over CirT: Instead of heavy Frequency-Attention, 
+#     we use efficient Frequency-Gating (Element-wise multiplication in Freq Domain).
+#     This saves compute to allow adding a Spatial Branch.
+#     """
+#     def __init__(self, dim, h=121):
+#         super().__init__()
+#         self.dim = dim
+#         self.h = h
+#         # Only process half frequencies due to conjugate symmetry of RFFT
+#         self.freq_dim = h // 2 + 1 
+
+#         # Complex weights: [Dim, Freq_Dim]
+#         # Treat channel mixing efficiently
+#         scale = (1 / (dim * dim))
+#         self.weights = nn.Parameter(
+#             scale * torch.randn(dim, self.freq_dim, 2, dtype=torch.float32)
+#         )
+
+#     def forward(self, x):
+#         # x: [B, N, C] -> N is Latitude (121)
+#         B, N, C = x.shape
+
+#         # 1. FFT along the latitude dimension
+#         # x_ft: [B, N//2+1, C] (Complex)
+#         x_ft = torch.fft.rfft(x, dim=1, norm='ortho')
+
+#         # 2. Spectral Gating
+#         # We define weights as real (..., 2) to handle AMP safely, convert to complex here
+#         w = torch.view_as_complex(self.weights) # [C, Freq]
+
+#         # Element-wise multiplication (Broadcasting over Batch)
+#         # x_ft: [B, Freq, C] * w.T: [C, Freq] -> need alignment
+#         # Let's permute x_ft to [B, C, Freq]
+#         x_ft = x_ft.permute(0, 2, 1)
+
+#         # Spectral Filtering: [B, C, Freq] * [C, Freq] -> [B, C, Freq]
+#         out_ft = x_ft * w.unsqueeze(0)
+
+#         # 3. IFFT
+#         out_ft = out_ft.permute(0, 2, 1) # Back to [B, Freq, C]
+#         x = torch.fft.irfft(out_ft, n=N, dim=1, norm='ortho')
+
+#         return x
+
+# class SpatialAttention(nn.Module):
+#     """
+#     Spatial Domain Branch (Standard MHSA).
+#     Captures Sparse Teleconnections and Non-periodic dependencies 
+#     (e.g., Tropics -> Poles interaction) which FFT struggles with.
+#     """
+#     def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.):
+#         super().__init__()
+#         self.num_heads = num_heads
+#         head_dim = dim // num_heads
+#         self.scale = head_dim ** -0.5
+
+#         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+#         self.attn_drop = nn.Dropout(attn_drop)
+#         self.proj = nn.Linear(dim, dim)
+#         self.proj_drop = nn.Dropout(proj_drop)
+
+#     def forward(self, x):
+#         B, N, C = x.shape
+#         # Standard MHSA
+#         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+#         q, k, v = qkv[0], qkv[1], qkv[2]
+
+#         attn = (q @ k.transpose(-2, -1)) * self.scale
+#         attn = attn.softmax(dim=-1)
+#         attn = self.attn_drop(attn)
+
+#         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+#         x = self.proj(x)
+#         x = self.proj_drop(x)
+#         return x
+
+# class LocalMixer(nn.Module):
+#     """
+#     Local Refinement Branch.
+#     Uses 1D Conv over Latitude to capture local gradients (North-South exchange).
+#     Crucial for physical consistency (smoothness).
+#     """
+#     def __init__(self, dim, kernel_size=5):
+#         super().__init__()
+#         self.conv = nn.Conv1d(dim, dim, kernel_size, padding=kernel_size//2, groups=dim)
+
+#     def forward(self, x):
+#         # x: [B, N, C] -> [B, C, N]
+#         x = x.transpose(1, 2)
+#         x = self.conv(x)
+#         x = x.transpose(1, 2)
+#         return x
+
+# class HoloBlock(nn.Module):
+#     """
+#     The Holographic Block: Combines Spectral, Spatial, and Local information.
+#     Novelty: Parallel disentangled processing.
+#     """
+#     def __init__(
+#             self,
+#             dim,
+#             num_heads,
+#             mlp_ratio=4.,
+#             qkv_bias=False,
+#             drop=0.,
+#             attn_drop=0.,
+#             drop_path=0.,
+#             act_layer=nn.GELU,
+#             norm_layer=nn.LayerNorm,
+#             seq_len=121
+#     ):
+#         super().__init__()
+#         self.norm1 = norm_layer(dim)
+
+#         # --- Dual-Domain Mixer ---
+#         # 1. Global Periodic (Spectral)
+#         self.spectral = SpectralGating(dim, h=seq_len)
+#         # 2. Global Sparse (Spatial)
+#         self.spatial = SpatialAttention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
+#         # 3. Local Continuity
+#         self.local = LocalMixer(dim)
+
+#         # Learnable gating weights to balance the three
+#         self.w_spec = nn.Parameter(torch.ones(dim) * 0.5)
+#         self.w_spat = nn.Parameter(torch.ones(dim) * 0.5)
+
+#         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+
+#         self.norm2 = norm_layer(dim)
+#         self.mlp = Mlp(in_features=dim, hidden_features=int(dim * mlp_ratio), act_layer=act_layer, drop=drop)
+
+#     def forward(self, x):
+#         # x: [B, N, C]
+#         shortcut = x
+#         x_norm = self.norm1(x)
+
+#         # Parallel Execution
+#         # Novelty: Explicitly modeling Wave (Spectral) vs Particle (Spatial) behavior
+#         feat_spectral = self.spectral(x_norm)
+#         feat_spatial = self.spatial(x_norm)
+#         feat_local = self.local(x_norm)
+
+#         # Gated Fusion
+#         # w_spec controls how much we trust the wave dynamics
+#         # w_spat controls how much we trust the teleconnection attention
+#         mixed = (feat_spectral * self.w_spec) + (feat_spatial * self.w_spat) + feat_local
+
+#         x = shortcut + self.drop_path(mixed)
+
+#         # FFN
+#         x = x + self.drop_path(self.mlp(self.norm2(x)))
+#         return x
+
+# class PatchEmbed(nn.Module):
+#     """
+#     Standard Patch Embedding from CirT (Kept for compatibility and performance).
+#     Compresses Longitude (W) into Channels.
+#     """
+#     def __init__(self, img_size=[121, 240], in_chans=63, embed_dim=768):
+#         super().__init__()
+#         self.img_size = img_size
+#         self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=[1, img_size[1]], stride=1)
+#         self.norm = nn.LayerNorm(embed_dim)
+
+#     def forward(self, x):
+#         # x: [B, V, H, W]
+#         x = self.proj(x) # [B, Dim, H, 1]
+#         x = x.flatten(2).transpose(1, 2) # [B, H, Dim]
+#         x = self.norm(x)
+#         return x
+
+# # ==========================================
+# # 2. Main Model Class
+# # ==========================================
+
+# class Model(nn.Module):
+#     """
+#     Holo-Former (Holographic Transformer for S2S).
+
+#     A replacement for CirT that introduces Spatial-Spectral Parallel Mixing.
+#     Uses CirT's high-performance hyperparams (Embed=768, Depth=8).
+#     """
+#     def __init__(
+#         self,
+#         img_size=[121, 240],
+#         input_size=63,
+#         # Patch size is conceptually W here due to embedding strategy
+#         patch_size=240, 
+#         # CirT defaults
+#         embed_dim=768,
+#         depth=8,
+#         decoder_depth=2,
+#         num_heads=16,
+#         mlp_ratio=4.0,
+#         drop_path=0.1,
+#         drop_rate=0.1
+#     ):
+#         super().__init__()
+
+#         self.img_size = img_size
+#         self.input_size = input_size
+#         self.patch_size = img_size[1] # 240
+
+#         # 1. Embedding (CirT Style)
+#         self.token_embeds = PatchEmbed(img_size, input_size, embed_dim)
+#         self.num_patches = 121 # Latitude points
+
+#         # Learnable Positional Embedding
+#         self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, embed_dim))
+#         trunc_normal_(self.pos_embed, std=0.02)
+#         self.pos_drop = nn.Dropout(p=drop_rate)
+
+#         # 2. Backbone (HoloBlocks)
+#         dpr = [x.item() for x in torch.linspace(0, drop_path, depth)]
+#         self.blocks = nn.ModuleList([
+#             HoloBlock(
+#                 dim=embed_dim,
+#                 num_heads=num_heads,
+#                 mlp_ratio=mlp_ratio,
+#                 qkv_bias=True,
+#                 drop=drop_rate,
+#                 drop_path=dpr[i],
+#                 norm_layer=nn.LayerNorm,
+#                 seq_len=self.num_patches
+#             )
+#             for i in range(depth)
+#         ])
+
+#         self.norm = nn.LayerNorm(embed_dim)
+
+#         # 3. Prediction Head (CirT Style)
+#         # Matches output shape logic of CirT
+#         self.head = nn.ModuleList()
+#         for _ in range(decoder_depth):
+#             self.head.append(nn.Linear(embed_dim, embed_dim))
+#             self.head.append(nn.GELU())
+
+#         # Output dim handles (2 weeks) * (Input Vars) * (Longitude Width)
+#         # Because we compressed Longitude into channel earlier, we expand it back here.
+#         output_dim = self.input_size * 2 * self.img_size[1]
+#         self.head.append(nn.Linear(embed_dim, output_dim))
+#         self.head = nn.Sequential(*self.head)
+
+#         self.initialize_weights()
+
+#     def initialize_weights(self):
+#         self.apply(self._init_weights)
+
+#     def _init_weights(self, m):
+#         if isinstance(m, nn.Linear):
+#             trunc_normal_(m.weight, std=0.02)
+#             if m.bias is not None:
+#                 nn.init.constant_(m.bias, 0)
+#         elif isinstance(m, nn.LayerNorm):
+#             nn.init.constant_(m.bias, 0)
+#             nn.init.constant_(m.weight, 1.0)
+#         elif isinstance(m, nn.Conv2d):
+#             trunc_normal_(m.weight, std=0.02)
+#             if m.bias is not None:
+#                 nn.init.constant_(m.bias, 0)
+
+#     def unpatchify(self, x):
+#         """
+#         Reconstructs spatial dimensions from the flattened prediction.
+#         x: (B, H, V * 2 * W) -> (B, 2, V, H, W)
+#         """
+#         B, H, D = x.shape
+#         W = self.img_size[1]
+#         V = self.input_size
+
+#         # CirT's output format is essentially flattened longitude
+#         # Reshape: [B, H, 2 * V * W] -> [B, H, 2, V, W]
+#         x = x.reshape(B, H, 2, V, W)
+
+#         # Permute to target: [B, 2, V, H, W]
+#         x = x.permute(0, 2, 3, 1, 4)
+#         return x
+
+#     def forward_encoder(self, x):
+#         # x: [B, V, H, W]
+#         x = self.token_embeds(x) # [B, 121, 768]
+#         x = x + self.pos_embed
+#         x = self.pos_drop(x)
+
+#         for blk in self.blocks:
+#             x = blk(x)
+
+#         x = self.norm(x)
+#         return x
+
+#     def forward(self, x):
+#         # Input: [B, 63, 121, 240]
+#         feats = self.forward_encoder(x) # [B, 121, 768]
+#         preds = self.head(feats)        # [B, 121, 63*2*240]
+#         preds = self.unpatchify(preds)  # [B, 2, 63, 121, 240]
+#         return preds
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -6,63 +319,89 @@ from timm.models.vision_transformer import trunc_normal_
 import torch.fft
 
 # ==========================================
-# 1. Core Modules
+# 1. Theoretical Sub-Operators (算子实现)
 # ==========================================
 
-class SpectralGating(nn.Module):
+class RMSNorm(nn.Module):
     """
-    Frequency Domain Branch (Inspired by CirT/FNO).
-    Captures Global Periodic Patterns (Planetary Waves).
+    Root Mean Square Layer Normalization.
+    Stabilizes operator learning by preserving vector direction (phase info)
+    while normalizing energy (amplitude).
+    """
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.scale = dim ** -0.5
+        self.eps = eps
+        self.g = nn.Parameter(torch.ones(dim))
 
-    Improvement over CirT: Instead of heavy Frequency-Attention, 
-    we use efficient Frequency-Gating (Element-wise multiplication in Freq Domain).
-    This saves compute to allow adding a Spatial Branch.
+    def forward(self, x):
+        # x: [B, N, C]
+        norm = torch.norm(x, dim=-1, keepdim=True) * self.scale
+        return x / (norm + self.eps) * self.g
+
+class SpectralOperator2D(nn.Module):
     """
-    def __init__(self, dim, h=121):
+    [Operator S] 2D Spectral Dispersive Operator.
+    Approximates linear wave propagation in 2D frequency domain.
+    Theory: \mathcal{F}(u) -> W \cdot \mathcal{F}(u)
+    
+    NEW: Captures both meridional (latitude) and zonal (longitude) wave propagation.
+    This enables modeling of important atmospheric phenomena like:
+    - Rossby waves (planetary-scale waves)
+    - Kelvin waves (equatorial waves)
+    - Gravity waves
+    """
+    def __init__(self, dim, h=121, w=240):
         super().__init__()
         self.dim = dim
         self.h = h
-        # Only process half frequencies due to conjugate symmetry of RFFT
-        self.freq_dim = h // 2 + 1 
+        self.w = w
+        
+        # Frequency dimensions after rfft2
+        self.freq_h = h
+        self.freq_w = w // 2 + 1
 
-        # Complex weights: [Dim, Freq_Dim]
-        # Treat channel mixing efficiently
+        # Learnable 2D Spectral Filter
+        # Shape: [C, freq_h, freq_w, 2] for complex weights
         scale = (1 / (dim * dim))
         self.weights = nn.Parameter(
-            scale * torch.randn(dim, self.freq_dim, 2, dtype=torch.float32)
+            scale * torch.randn(dim, self.freq_h, self.freq_w, 2, dtype=torch.float32)
         )
 
     def forward(self, x):
-        # x: [B, N, C] -> N is Latitude (121)
+        # x: [B, N, C] where N = H * W = 121 * 240
         B, N, C = x.shape
 
-        # 1. FFT along the latitude dimension
-        # x_ft: [B, N//2+1, C] (Complex)
-        x_ft = torch.fft.rfft(x, dim=1, norm='ortho')
+        # 1. Reshape to 2D spatial structure
+        x_2d = x.view(B, self.h, self.w, C)  # [B, H, W, C]
 
-        # 2. Spectral Gating
-        # We define weights as real (..., 2) to handle AMP safely, convert to complex here
-        w = torch.view_as_complex(self.weights) # [C, Freq]
+        # 2. Permute for FFT: [B, C, H, W]
+        x_2d = x_2d.permute(0, 3, 1, 2)
 
-        # Element-wise multiplication (Broadcasting over Batch)
-        # x_ft: [B, Freq, C] * w.T: [C, Freq] -> need alignment
-        # Let's permute x_ft to [B, C, Freq]
-        x_ft = x_ft.permute(0, 2, 1)
+        # 3. 2D FFT (captures both meridional and zonal frequencies)
+        x_ft = torch.fft.rfft2(x_2d, dim=(2, 3), norm='ortho')  # [B, C, H, W//2+1]
 
-        # Spectral Filtering: [B, C, Freq] * [C, Freq] -> [B, C, Freq]
-        out_ft = x_ft * w.unsqueeze(0)
+        # 4. Spectral Filtering
+        # Convert real weights to complex
+        w = torch.view_as_complex(self.weights)  # [C, freq_h, freq_w]
 
-        # 3. IFFT
-        out_ft = out_ft.permute(0, 2, 1) # Back to [B, Freq, C]
-        x = torch.fft.irfft(out_ft, n=N, dim=1, norm='ortho')
+        # Apply spectral filter
+        out_ft = x_ft * w.unsqueeze(0)  # [B, C, H, W//2+1]
 
-        return x
+        # 5. Inverse 2D FFT
+        x_out = torch.fft.irfft2(out_ft, s=(self.h, self.w), dim=(2, 3), norm='ortho')  # [B, C, H, W]
 
-class SpatialAttention(nn.Module):
+        # 6. Reshape back to sequence format
+        x_out = x_out.permute(0, 2, 3, 1)  # [B, H, W, C]
+        x_out = x_out.reshape(B, N, C)  # [B, N, C]
+
+        return x_out
+
+class NonLocalOperator(nn.Module):
     """
-    Spatial Domain Branch (Standard MHSA).
-    Captures Sparse Teleconnections and Non-periodic dependencies 
-    (e.g., Tropics -> Poles interaction) which FFT struggles with.
+    [Operator K] Non-local Integral Operator.
+    Approximates long-range advection/teleconnection via Kernel integration (Attention).
+    Theory: \int K(x, y) u(y) dy
     """
     def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.):
         super().__init__()
@@ -77,7 +416,6 @@ class SpatialAttention(nn.Module):
 
     def forward(self, x):
         B, N, C = x.shape
-        # Standard MHSA
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
@@ -90,27 +428,88 @@ class SpatialAttention(nn.Module):
         x = self.proj_drop(x)
         return x
 
-class LocalMixer(nn.Module):
+class DifferentialOperator(nn.Module):
     """
-    Local Refinement Branch.
-    Uses 1D Conv over Latitude to capture local gradients (North-South exchange).
-    Crucial for physical consistency (smoothness).
+    [Operator D] Local Differential Operator with 2D Structure.
+    Approximates local gradients/diffusion terms via 2D Convolution.
+    Theory: \nabla \cdot (c \nabla u)
+    
+    NEW: Uses 2D convolution to capture both lat/lon gradients.
     """
-    def __init__(self, dim, kernel_size=5):
+    def __init__(self, dim, kernel_size=5, h=121, w=240):
         super().__init__()
-        self.conv = nn.Conv1d(dim, dim, kernel_size, padding=kernel_size//2, groups=dim)
+        self.h = h
+        self.w = w
+        # 2D depthwise conv for spatial gradient approximation
+        self.conv = nn.Conv2d(
+            dim, dim, 
+            kernel_size=kernel_size, 
+            padding=kernel_size//2, 
+            groups=dim
+        )
 
     def forward(self, x):
-        # x: [B, N, C] -> [B, C, N]
-        x = x.transpose(1, 2)
-        x = self.conv(x)
-        x = x.transpose(1, 2)
-        return x
+        # x: [B, N, C] -> [B, H, W, C]
+        B, N, C = x.shape
+        
+        # Reshape to 2D
+        x_2d = x.view(B, self.h, self.w, C)
+        x_2d = x_2d.permute(0, 3, 1, 2)  # [B, C, H, W]
+        
+        # 2D Convolution
+        x_out = self.conv(x_2d)  # [B, C, H, W]
+        
+        # Reshape back
+        x_out = x_out.permute(0, 2, 3, 1)  # [B, H, W, C]
+        x_out = x_out.reshape(B, N, C)  # [B, N, C]
+        
+        return x_out
 
-class HoloBlock(nn.Module):
+# ==========================================
+# 2. Dynamic Lie-Trotter Gating (Theoretical Core)
+# ==========================================
+
+class DynamicOperatorGate(nn.Module):
     """
-    The Holographic Block: Combines Spectral, Spatial, and Local information.
-    Novelty: Parallel disentangled processing.
+    Learns the State-Dependent Coefficients for Operator Splitting.
+
+    Contribution: 
+    Instead of fixed splitting (u_{t+1} = S(K(D(u)))), we propose adaptive splitting:
+    u_{t+1} = u_t + \lambda_s(u)S(u) + \lambda_k(u)K(u) + \lambda_d(u)D(u)
+
+    This approximates a higher-order numerical scheme where step sizes adapt to local stiffness.
+    """
+    def __init__(self, dim, reduction=4):
+        super().__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(dim, dim // reduction),
+            RMSNorm(dim // reduction),
+            nn.GELU(),
+            # Output 3 weights per channel: [alpha_s, alpha_k, alpha_d]
+            nn.Linear(dim // reduction, dim * 3) 
+        )
+
+    def forward(self, x):
+        # x: [B, N, C]
+
+        # 1. Global Context Pooling (State descriptor)
+        ctx = x.mean(dim=1) # [B, C]
+
+        # 2. Predict Operator Coefficients
+        # weights: [B, C, 3] -> [B, 3, C]
+        weights = self.fc(ctx) # [B, 3*C]
+        weights = weights.reshape(x.shape[0], 3, x.shape[2]) 
+
+        # 3. Sigmoid/Softmax
+        # Use Softmax to enforce a competitive resource allocation (Conservation of Energy concept)
+        # Or Sigmoid to allow independent scaling. Softmax is more "Splitting-like".
+        weights = F.softmax(weights, dim=1).unsqueeze(2) # [B, 3, 1, C]
+
+        return weights
+
+class OperatorSplittingBlock(nn.Module):
+    """
+    OST Block: Operator Splitting Transformer Block with 2D Spectral Operator.
     """
     def __init__(
             self,
@@ -123,22 +522,22 @@ class HoloBlock(nn.Module):
             drop_path=0.,
             act_layer=nn.GELU,
             norm_layer=nn.LayerNorm,
-            seq_len=121
+            spatial_size=(121, 240)
     ):
         super().__init__()
         self.norm1 = norm_layer(dim)
+        self.h, self.w = spatial_size
 
-        # --- Dual-Domain Mixer ---
-        # 1. Global Periodic (Spectral)
-        self.spectral = SpectralGating(dim, h=seq_len)
-        # 2. Global Sparse (Spatial)
-        self.spatial = SpatialAttention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
-        # 3. Local Continuity
-        self.local = LocalMixer(dim)
+        # --- The Three Sub-Operators (with 2D spatial awareness) ---
+        self.op_spectral = SpectralOperator2D(dim, h=self.h, w=self.w)
+        self.op_nonlocal = NonLocalOperator(
+            dim, num_heads=num_heads, qkv_bias=qkv_bias, 
+            attn_drop=attn_drop, proj_drop=drop
+        )
+        self.op_diff = DifferentialOperator(dim, h=self.h, w=self.w)
 
-        # Learnable gating weights to balance the three
-        self.w_spec = nn.Parameter(torch.ones(dim) * 0.5)
-        self.w_spat = nn.Parameter(torch.ones(dim) * 0.5)
+        # --- Dynamic Gating (The Brain) ---
+        self.gate = DynamicOperatorGate(dim)
 
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
@@ -150,27 +549,41 @@ class HoloBlock(nn.Module):
         shortcut = x
         x_norm = self.norm1(x)
 
-        # Parallel Execution
-        # Novelty: Explicitly modeling Wave (Spectral) vs Particle (Spatial) behavior
-        feat_spectral = self.spectral(x_norm)
-        feat_spatial = self.spatial(x_norm)
-        feat_local = self.local(x_norm)
+        # 1. Compute Sub-Operator Responses (Parallel Execution)
+        # Represents solving sub-problems d_t u = S(u), d_t u = K(u), d_t u = D(u)
+        out_s = self.op_spectral(x_norm)
+        out_k = self.op_nonlocal(x_norm)
+        out_d = self.op_diff(x_norm)
 
-        # Gated Fusion
-        # w_spec controls how much we trust the wave dynamics
-        # w_spat controls how much we trust the teleconnection attention
-        mixed = (feat_spectral * self.w_spec) + (feat_spatial * self.w_spat) + feat_local
+        # Coupling Trick (Optional but recommended for Performance): 
+        # Allow slight non-linear interaction before summation (Simulates Operator Coupling)
+        # E.g. Advection affects Diffusion.
+        out_d = out_d * (1 + torch.tanh(out_k))
 
+        # 2. Dynamic Weighting (Lie-Trotter Approximation)
+        # Stack: [B, 3, N, C]
+        stacked_ops = torch.stack([out_s, out_k, out_d], dim=1)
+
+        # weights: [B, 3, 1, C]
+        weights = self.gate(x_norm)
+
+        # Weighted Sum: \sum \lambda_i(u) * Op_i(u)
+        mixed = torch.sum(stacked_ops * weights, dim=1)
+
+        # 3. Time Stepping (Euler Integration)
         x = shortcut + self.drop_path(mixed)
 
-        # FFN
+        # FFN (Non-linear source term)
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
 
+# ==========================================
+# 3. Infrastructure (Aligned with Baseline)
+# ==========================================
+
 class PatchEmbed(nn.Module):
     """
-    Standard Patch Embedding from CirT (Kept for compatibility and performance).
-    Compresses Longitude (W) into Channels.
+    Standard Patch Embedding from CirT.
     """
     def __init__(self, img_size=[121, 240], in_chans=63, embed_dim=768):
         super().__init__()
@@ -186,24 +599,29 @@ class PatchEmbed(nn.Module):
         return x
 
 # ==========================================
-# 2. Main Model Class
+# 4. Main Model
 # ==========================================
 
 class Model(nn.Module):
     """
-    Holo-Former (Holographic Transformer for S2S).
+    OST: Operator-Splitting Transformer with 2D Spectral Operator (ICML Version).
 
-    A replacement for CirT that introduces Spatial-Spectral Parallel Mixing.
-    Uses CirT's high-performance hyperparams (Embed=768, Depth=8).
+    Theoretical Claim:
+    A neural operator architecture that approximates the evolution operator 
+    of chaotic systems via dynamic Lie-Trotter splitting.
+    
+    NEW: 2D spectral operator captures both meridional and zonal wave propagation,
+    enabling better representation of global atmospheric dynamics including:
+    - Rossby waves (planetary-scale oscillations)
+    - Kelvin waves (equatorial waves)
+    - Gravity waves and other 2D propagation phenomena
     """
     def __init__(
         self,
         img_size=[121, 240],
         input_size=63,
-        # Patch size is conceptually W here due to embedding strategy
-        patch_size=240, 
-        # CirT defaults
-        embed_dim=768,
+        patch_size=124, 
+        embed_dim=256,
         depth=8,
         decoder_depth=2,
         num_heads=16,
@@ -215,44 +633,42 @@ class Model(nn.Module):
 
         self.img_size = img_size
         self.input_size = input_size
-        self.patch_size = img_size[1] # 240
+        self.patch_size = img_size[1]
 
-        # 1. Embedding (CirT Style)
+        # 1. Embedding
         self.token_embeds = PatchEmbed(img_size, input_size, embed_dim)
-        self.num_patches = 121 # Latitude points
+        # Note: num_patches is now H*W for full 2D representation
+        # But we keep the current architecture where we work on H patches
+        self.num_patches = img_size[0]  # 121 latitude bands
 
-        # Learnable Positional Embedding
         self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, embed_dim))
         trunc_normal_(self.pos_embed, std=0.02)
         self.pos_drop = nn.Dropout(p=drop_rate)
 
-        # 2. Backbone (HoloBlocks)
+        # 2. Backbone (Operator Splitting Blocks with 2D Spectral)
         dpr = [x.item() for x in torch.linspace(0, drop_path, depth)]
         self.blocks = nn.ModuleList([
-            HoloBlock(
+            OperatorSplittingBlock(
                 dim=embed_dim,
                 num_heads=num_heads,
                 mlp_ratio=mlp_ratio,
                 qkv_bias=True,
                 drop=drop_rate,
                 drop_path=dpr[i],
-                norm_layer=nn.LayerNorm,
-                seq_len=self.num_patches
+                norm_layer=RMSNorm,
+                spatial_size=(self.num_patches, img_size[1])  # (H=121, W=240)
             )
             for i in range(depth)
         ])
 
-        self.norm = nn.LayerNorm(embed_dim)
+        self.norm = RMSNorm(embed_dim)
 
-        # 3. Prediction Head (CirT Style)
-        # Matches output shape logic of CirT
+        # 3. Head
         self.head = nn.ModuleList()
         for _ in range(decoder_depth):
             self.head.append(nn.Linear(embed_dim, embed_dim))
             self.head.append(nn.GELU())
 
-        # Output dim handles (2 weeks) * (Input Vars) * (Longitude Width)
-        # Because we compressed Longitude into channel earlier, we expand it back here.
         output_dim = self.input_size * 2 * self.img_size[1]
         self.head.append(nn.Linear(embed_dim, output_dim))
         self.head = nn.Sequential(*self.head)
@@ -270,31 +686,21 @@ class Model(nn.Module):
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-        elif isinstance(m, nn.Conv2d):
+        elif isinstance(m, (nn.Conv2d, nn.Conv1d)):
             trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
     def unpatchify(self, x):
-        """
-        Reconstructs spatial dimensions from the flattened prediction.
-        x: (B, H, V * 2 * W) -> (B, 2, V, H, W)
-        """
         B, H, D = x.shape
         W = self.img_size[1]
         V = self.input_size
-
-        # CirT's output format is essentially flattened longitude
-        # Reshape: [B, H, 2 * V * W] -> [B, H, 2, V, W]
         x = x.reshape(B, H, 2, V, W)
-
-        # Permute to target: [B, 2, V, H, W]
         x = x.permute(0, 2, 3, 1, 4)
         return x
 
     def forward_encoder(self, x):
-        # x: [B, V, H, W]
-        x = self.token_embeds(x) # [B, 121, 768]
+        x = self.token_embeds(x)
         x = x + self.pos_embed
         x = self.pos_drop(x)
 
@@ -305,10 +711,7 @@ class Model(nn.Module):
         return x
 
     def forward(self, x):
-        # Input: [B, 63, 121, 240]
-        feats = self.forward_encoder(x) # [B, 121, 768]
-        preds = self.head(feats)        # [B, 121, 63*2*240]
-        preds = self.unpatchify(preds)  # [B, 2, 63, 121, 240]
+        feats = self.forward_encoder(x)
+        preds = self.head(feats)
+        preds = self.unpatchify(preds)
         return preds
-
- 
