@@ -152,16 +152,15 @@ def main(args):
         print(f"Trainer config -> accelerator={accelerator}, devices={devices}, strategy={strategy}, precision={precision}")
 
     # 使用自定义进度条回调，避免重复输出
-    # 只在单卡或rank 0显示；多卡时直接关闭进度条，避免tee/DPP重复
+    # 在DDP模式下，TQDMProgressBar会自动处理只在rank 0显示
     progress_bar_callback = None
-    multi_gpu = accelerator == 'gpu' and devices and int(devices) > 1
-    if multi_gpu:
-        enable_progress_bar = False
     if enable_progress_bar:
         try:
             from lightning.pytorch.callbacks import TQDMProgressBar
+            # 使用TQDMProgressBar，它会自动处理DDP模式下的输出
             progress_bar_callback = TQDMProgressBar(refresh_rate=1)
         except ImportError:
+            # 如果TQDMProgressBar不可用，使用默认进度条
             pass
     
     callbacks_list = [checkpoint_callback, speed_callback, config_saver]
@@ -176,7 +175,7 @@ def main(args):
         logger=tb_logger,
         callbacks=callbacks_list,
         enable_progress_bar=enable_progress_bar,
-        enable_model_summary=is_rank_zero,
+        enable_model_summary=True,
         precision=precision,
     )
 
