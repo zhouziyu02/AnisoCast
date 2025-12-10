@@ -28,5 +28,5 @@ echo "✅ 完整评估完成"
 echo "📁 结果保存在: ./results/Ours/"
 echo "📊 包含指标: RMSE, MAE, Bias, R², ACC, MS-SSIM, SpectralDiv, SpectralRes"
 
-# CUDA_VISIBLE_DEVICES=0,1,2,3 bash train_ours.sh --np 4 --model-name CirT --tag CirT               
-# CUDA_VISIBLE_DEVICES=4,5,6,7 bash train_ours.sh --np 4 --model-name ost --tag ost-12.9-last
+# CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash train_ours.sh --np 8 --model-name CirT --tag CirT               
+# CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash train_ours.sh --np 8 --model-name ost --tag ost-12.10
