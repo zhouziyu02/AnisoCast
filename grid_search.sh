@@ -317,15 +317,30 @@ run_grid_search() {
   # 读取所有任务到数组
   mapfile -t tasks < <(echo "$combinations")
   
-  # 处理每个任务
+  # 处理每个任务（批次处理：每批4个任务，全部完成后启动下一批）
   local task_idx=0
-  while [[ $task_idx -lt ${#tasks[@]} ]] || [[ ${#pids[@]} -gt 0 ]]; do
-    # 启动新任务（如果还有未处理的任务且未达到最大并发数）
+  local batch_num=1
+  
+  while [[ $task_idx -lt ${#tasks[@]} ]]; do
+    # 启动当前批次的任务（最多max_concurrent个）
+    local batch_start_idx=$task_idx
+    local pids=()
+    local task_ids=()
+    local batch_tasks=()
+    
+    echo "" | tee -a "$grid_dir/grid_search.log"
+    local batch_end_idx=$((task_idx + max_concurrent))
+    if [[ $batch_end_idx -gt ${#tasks[@]} ]]; then
+      batch_end_idx=${#tasks[@]}
+    fi
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] 🚀 开始批次 $batch_num (任务 $((task_idx+1))-$batch_end_idx)" | tee -a "$grid_dir/grid_search.log"
+    
+    # 启动当前批次的所有任务
     while [[ ${#pids[@]} -lt $max_concurrent ]] && [[ $task_idx -lt ${#tasks[@]} ]]; do
       local task="${tasks[$task_idx]}"
       IFS='|' read -r lr emb dep dec setting <<< "$task"
       
-      # 计算当前任务的GPU ID（基于当前运行的并发任务索引）
+      # 计算当前任务的GPU ID（基于当前批次内的索引）
       local current_task_id=${#pids[@]}  # 0到max_concurrent-1
       
       # 后台运行任务
@@ -333,50 +348,59 @@ run_grid_search() {
       local pid=$!
       pids+=("$pid")
       task_ids+=("$current_task_id")
+      batch_tasks+=("$task|$pid")
       tasks[$task_idx]="$task|$pid"  # 保存pid用于追踪
       
       echo "[$(date +'%Y-%m-%d %H:%M:%S')] 📌 启动任务 [$((task_idx+1))/$total_tasks]: $setting (PID: $pid, GPUs: 0-7)" | tee -a "$grid_dir/grid_search.log"
       ((task_idx++))
     done
     
-    # 检查已完成的进程
-    local new_pids=()
-    local new_task_ids=()
-    local i=0
-    while [[ $i -lt ${#pids[@]} ]]; do
-      local pid="${pids[$i]}"
-      if kill -0 "$pid" 2>/dev/null; then
-        # 进程仍在运行
-        new_pids+=("$pid")
-        new_task_ids+=("${task_ids[$i]}")
-      else
-        # 进程已完成，检查退出码
-        if wait "$pid" 2>/dev/null; then
-          ((completed++))
-          local task_info="${tasks[$((task_idx - ${#pids[@]} + i))]}"
-          IFS='|' read -r _lr _emb _dep _dec _setting _ <<< "$task_info"
-          echo "$_setting" >> "$completed_file"
-          echo "[$(date +'%Y-%m-%d %H:%M:%S')] ✅ 完成 [$completed/$total_tasks]: $_setting" | tee -a "$grid_dir/grid_search.log"
+    # 等待当前批次的所有任务完成
+    while [[ ${#pids[@]} -gt 0 ]]; do
+      local new_pids=()
+      local new_task_ids=()
+      local i=0
+      
+      while [[ $i -lt ${#pids[@]} ]]; do
+        local pid="${pids[$i]}"
+        if kill -0 "$pid" 2>/dev/null; then
+          # 进程仍在运行
+          new_pids+=("$pid")
+          new_task_ids+=("${task_ids[$i]}")
         else
-          ((failed++))
-          local task_info="${tasks[$((task_idx - ${#pids[@]} + i))]}"
+          # 进程已完成，检查退出码
+          local batch_task_idx=$((batch_start_idx + i))
+          local task_info="${tasks[$batch_task_idx]}"
           IFS='|' read -r _lr _emb _dep _dec _setting _ <<< "$task_info"
-          echo "$_setting" >> "$failed_file"
-          echo "[$(date +'%Y-%m-%d %H:%M:%S')] ❌ 失败 [$failed/$total_tasks]: $_setting" | tee -a "$grid_dir/grid_search.log"
+          
+          if wait "$pid" 2>/dev/null; then
+            ((completed++))
+            echo "$_setting" >> "$completed_file"
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] ✅ 完成 [$completed/$total_tasks]: $_setting" | tee -a "$grid_dir/grid_search.log"
+          else
+            ((failed++))
+            echo "$_setting" >> "$failed_file"
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] ❌ 失败 [$failed/$total_tasks]: $_setting" | tee -a "$grid_dir/grid_search.log"
+          fi
         fi
+        ((i++))
+      done
+      
+      pids=("${new_pids[@]}")
+      task_ids=("${new_task_ids[@]}")
+      
+      # 更新进度
+      echo "$completed/$total_tasks completed, $failed failed, ${#pids[@]} running" > "$progress_file"
+      
+      # 如果还有任务在运行，等待一小段时间
+      if [[ ${#pids[@]} -gt 0 ]]; then
+        sleep 5
       fi
-      ((i++))
     done
-    pids=("${new_pids[@]}")
-    task_ids=("${new_task_ids[@]}")
     
-    # 更新进度
-    echo "$completed/$total_tasks completed, $failed failed, ${#pids[@]} running" > "$progress_file"
-    
-    # 如果还有任务在运行，等待一小段时间
-    if [[ ${#pids[@]} -gt 0 ]]; then
-      sleep 5
-    fi
+    # 当前批次全部完成
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] ✅ 批次 $batch_num 完成" | tee -a "$grid_dir/grid_search.log"
+    ((batch_num++))
   done
   
   echo ""
