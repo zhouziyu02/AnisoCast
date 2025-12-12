@@ -7,7 +7,7 @@ echo "🔍 检查Python环境..."
 python3 --version
 
 # 检查检查点文件是否存在
-CHECKPOINT_PATH="/mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/lightning_logs/version_208/checkpoints/epoch=17-step=990.ckpt"
+CHECKPOINT_PATH="/mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/lightning_logs/version_229/checkpoints/epoch=17-step=990.ckpt"
 if [ ! -f "$CHECKPOINT_PATH" ]; then
     echo "❌ 检查点文件不存在: $CHECKPOINT_PATH"
     echo "请确认检查点文件路径是否正确"
@@ -29,4 +29,4 @@ echo "📁 结果保存在: ./results/Ours/"
 echo "📊 包含指标: RMSE, MAE, Bias, R², ACC, MS-SSIM, SpectralDiv, SpectralRes"
 
 # CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash train_ours.sh --np 8 --model-name CirT --tag CirT               
-# CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash train_ours.sh --np 8 --model-name ost --tag ost-12.10
+# CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash train_ours.sh --model-name ost --tag ost-12.12-droplast-latter

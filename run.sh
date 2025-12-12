@@ -181,7 +181,7 @@
 #     echo "❌ 训练失败"
 #     exit 1
 # fi
-# ps aux | grep train.py | grep -v grep | awk '{print $2}' | xargs kill -9
+# ps aux | grep run.py | grep -v grep | awk '{print $2}' | xargs kill -9
 #!/bin/bash
 export NCCL_SOCKET_FAMILY=AF_INET
 unset NCCL_SOCKET_IFNAME   

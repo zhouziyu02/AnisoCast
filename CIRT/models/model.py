@@ -470,7 +470,7 @@ class S2SBenchmarkModel(pl.LightningModule):
     def train_dataloader(self):
         return DataLoader(self.train_dataset, 
                           num_workers=self.model_args['num_workers'], 
-                          batch_size=self.data_args['batch_size'], shuffle=True)
+                          batch_size=self.data_args['batch_size'], shuffle=True, drop_last=True)
 
     def val_dataloader(self):
         return DataLoader(self.val_dataset, 
@@ -480,7 +480,7 @@ class S2SBenchmarkModel(pl.LightningModule):
     def test_dataloader(self):
         return DataLoader(self.test_dataset, 
                           num_workers=self.model_args['num_workers'], 
-                          batch_size=self.data_args['batch_size'])
+                          batch_size=self.data_args['batch_size'], drop_last=True)
     
     def predict_step(self, batch, batch_idx):
         """预测步骤，用于评估"""

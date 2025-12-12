@@ -32,7 +32,7 @@ np=${NP:-8}
 use_tensorboard=false
 background=true
 custom_tag=""
-model_name="ours"  # 默认使用ours模型，可设置为ost
+model_name="ost"  # 默认使用ours模型，可设置为ost
 
 # 固定数据配置
 img_size_h=121
