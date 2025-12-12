@@ -20,13 +20,13 @@ decoder_depths=(1 2 3)                       # 3个候选值
 # ==========================================
 # 并发控制参数
 # ==========================================
-max_concurrent=6  # 最大并发进程数
+max_concurrent=4  # 最大并发进程数（4个任务，每个任务使用8张GPU）
 
 # ==========================================
 # 其他固定参数（可通过命令行覆盖）
 # ==========================================
 model_name="ost"
-np=${NP:-8}  # 默认4卡，可通过环境变量NP覆盖
+np=${NP:-8}  # 每个任务使用的GPU数量（默认8张，每个任务都使用全部8张GPU）
 epochs=20
 batch_size=32
 weight_decay="1e-5"
@@ -99,6 +99,7 @@ run_single_task() {
   local dep="$3"
   local dec="$4"
   local setting="$5"
+  local task_id="${6:-0}"  # 任务ID，用于分配GPU
   
   local task_dir="$grid_dir/$setting"
   mkdir -p "$task_dir"
@@ -130,13 +131,20 @@ run_single_task() {
   # 生成tag（用于CSV文件名和匹配结果）
   local tag="${setting}"
   
+  # 每个任务都使用全部8张GPU（0-7）
+  # 如果外部设置了CUDA_VISIBLE_DEVICES，则使用外部设置
+  # 否则使用0-7
+  local gpu_list="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
+  
   # 记录训练前的文件状态（用于后续匹配）
   local logs_before=$(ls -1 "$root_dir/logs/$model_name" 2>/dev/null | wc -l)
   local results_before=$(ls -1 "$root_dir/results/$model_name" 2>/dev/null | wc -l)
   local lightning_before=$(ls -1 "$root_dir/lightning_logs/version_*" 2>/dev/null | wc -l)
   
   # 运行训练（使用train_ours.sh，但重定向输出）
+  # 通过CUDA_VISIBLE_DEVICES为每个任务分配不同的GPU
   local train_cmd=(
+    env CUDA_VISIBLE_DEVICES="$gpu_list"
     bash train_ours.sh
     --model-name "$model_name"
     --lr "$lr"
@@ -303,6 +311,7 @@ run_grid_search() {
   local completed=0
   local failed=0
   local pids=()
+  local task_ids=()  # 跟踪每个任务的ID（用于GPU分配）
   local tasks=()
   
   # 读取所有任务到数组
@@ -316,24 +325,30 @@ run_grid_search() {
       local task="${tasks[$task_idx]}"
       IFS='|' read -r lr emb dep dec setting <<< "$task"
       
+      # 计算当前任务的GPU ID（基于当前运行的并发任务索引）
+      local current_task_id=${#pids[@]}  # 0到max_concurrent-1
+      
       # 后台运行任务
-      run_single_task "$lr" "$emb" "$dep" "$dec" "$setting" &
+      run_single_task "$lr" "$emb" "$dep" "$dec" "$setting" "$current_task_id" &
       local pid=$!
       pids+=("$pid")
+      task_ids+=("$current_task_id")
       tasks[$task_idx]="$task|$pid"  # 保存pid用于追踪
       
-      echo "[$(date +'%Y-%m-%d %H:%M:%S')] 📌 启动任务 [$((task_idx+1))/$total_tasks]: $setting (PID: $pid)" | tee -a "$grid_dir/grid_search.log"
+      echo "[$(date +'%Y-%m-%d %H:%M:%S')] 📌 启动任务 [$((task_idx+1))/$total_tasks]: $setting (PID: $pid, GPUs: 0-7)" | tee -a "$grid_dir/grid_search.log"
       ((task_idx++))
     done
     
     # 检查已完成的进程
     local new_pids=()
+    local new_task_ids=()
     local i=0
     while [[ $i -lt ${#pids[@]} ]]; do
       local pid="${pids[$i]}"
       if kill -0 "$pid" 2>/dev/null; then
         # 进程仍在运行
         new_pids+=("$pid")
+        new_task_ids+=("${task_ids[$i]}")
       else
         # 进程已完成，检查退出码
         if wait "$pid" 2>/dev/null; then
@@ -353,6 +368,7 @@ run_grid_search() {
       ((i++))
     done
     pids=("${new_pids[@]}")
+    task_ids=("${new_task_ids[@]}")
     
     # 更新进度
     echo "$completed/$total_tasks completed, $failed failed, ${#pids[@]} running" > "$progress_file"
