@@ -136,10 +136,13 @@ run_single_task() {
   # 否则使用0-7
   local gpu_list="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
   
-  # 记录训练前的文件状态（用于后续匹配）
-  local logs_before=$(ls -1 "$root_dir/logs/$model_name" 2>/dev/null | wc -l)
-  local results_before=$(ls -1 "$root_dir/results/$model_name" 2>/dev/null | wc -l)
-  local lightning_before=$(ls -1 "$root_dir/lightning_logs/version_*" 2>/dev/null | wc -l)
+  # 记录训练前的文件状态（用于后续匹配，避免空目录触发 set -e）
+  local logs_before
+  logs_before=$(find "$root_dir/logs/$model_name" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+  local results_before
+  results_before=$(find "$root_dir/results/$model_name" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')
+  local lightning_before
+  lightning_before=$(find "$root_dir/lightning_logs" -mindepth 1 -maxdepth 1 -type d -name 'version_*' 2>/dev/null | wc -l | tr -d ' ')
   
   # 运行训练（使用train_ours.sh，但重定向输出）
   # 通过CUDA_VISIBLE_DEVICES为每个任务分配不同的GPU
