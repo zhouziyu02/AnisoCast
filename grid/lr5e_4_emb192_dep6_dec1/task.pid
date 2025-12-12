@@ -1,0 +1,7 @@
+setting=lr5e_4_emb192_dep6_dec1
+learning_rate=5e-4
+embed_dim=192
+depth=6
+decoder_depth=1
+start_time=1765546096
+pid=389366
