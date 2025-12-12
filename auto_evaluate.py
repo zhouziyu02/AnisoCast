@@ -197,16 +197,25 @@ def evaluate_ours(config_file, checkpoint_path, tag=None):
     """
     print("🎯 开始ours模型评估...")
     
-    # 从配置文件读取模型名称
+    # 从配置文件读取模型名称和tag
     model_name = None
+    config_tag = None
     try:
         import yaml
         with open(config_file, 'r') as f:
             config = yaml.safe_load(f)
             if 'model_args' in config and 'model_name' in config['model_args']:
                 model_name = config['model_args']['model_name']
+            # 从runtime_args中读取tag
+            if 'runtime_args' in config and 'tag' in config['runtime_args']:
+                config_tag = config['runtime_args']['tag']
+                if config_tag and config_tag.strip():
+                    config_tag = config_tag.strip()
     except:
         pass
+    
+    # 优先使用传入的tag，否则使用配置文件中的tag
+    final_tag = tag if tag else config_tag
     
     eval_script = "inference/others/evaluate_ours.py"
     if not os.path.exists(eval_script):
@@ -219,8 +228,14 @@ def evaluate_ours(config_file, checkpoint_path, tag=None):
         "--checkpoint_path", checkpoint_path
     ]
     
-    if tag:
-        cmd.extend(["--tag", tag])
+    # 如果模型是ost且有tag，将CSV保存到ost_hypersearch/{tag}/目录
+    if model_name == "ost" and final_tag:
+        output_dir = f"./ost_hypersearch/{final_tag}"
+        cmd.extend(["--output_dir", output_dir])
+        print(f"📁 CSV将保存到: {output_dir}")
+    
+    if final_tag:
+        cmd.extend(["--tag", final_tag])
     
     print(f"🚀 执行命令: {' '.join(cmd)}")
     

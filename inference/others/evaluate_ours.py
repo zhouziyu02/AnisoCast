@@ -281,9 +281,14 @@ def main(args):
     # 确保使用训练时保存的model_name，而不是load_model_and_predict内部可能修改的值
     model_args['model_name'] = final_model_name
     
-    # Create save directory using the final model_name
-    # 保存到 ./results/{model_name}/ 目录（与logs、lightning_logs同级）
-    save_dir = Path(f"./results/{final_model_name}")
+    # Create save directory
+    # 如果指定了output_dir，使用指定的目录；否则使用默认的./results/{model_name}
+    if args.output_dir and args.output_dir != './results':
+        # 如果output_dir是绝对路径或相对路径，直接使用
+        save_dir = Path(args.output_dir)
+    else:
+        # 默认保存到 ./results/{model_name}/ 目录
+        save_dir = Path(f"./results/{final_model_name}")
     save_dir.mkdir(parents=True, exist_ok=True)
     print(f"📁 结果将保存到: {save_dir.absolute()}")
     

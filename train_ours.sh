@@ -6,8 +6,7 @@ set -euo pipefail
 
 self_name=$(basename "$0")
 root_dir=$(cd "$(dirname "$0")" && pwd)
-log_dir="$root_dir/logs"
-mkdir -p "$log_dir"
+log_dir=""  # 将在参数解析后设置
 
 # ---------------------------------------------------------------
 # 默认参数 (可通过 CLI 覆盖)
@@ -75,6 +74,7 @@ Options:
   --foreground                      前台运行 (默认后台)
   --tag <string>                    自定义标签 (写入日志和PID)
   --model-name <string>             模型名称 (ours / ost / CirT，默认: ours)
+  --log-dir <string>                自定义日志目录 (默认: ./logs，ost模型默认: ./ost_hypersearch)
   -h, --help                        查看帮助
 EOF
 }
@@ -134,6 +134,8 @@ while [[ $# -gt 0 ]]; do
       custom_tag="$2"; shift 2 ;;
     --model-name)
       model_name="$2"; shift 2 ;;
+    --log-dir)
+      log_dir="$2"; shift 2 ;;
     *)
       echo "Unknown option: $arg" >&2
       usage
@@ -141,6 +143,17 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# 设置默认日志目录
+if [[ -z "$log_dir" ]]; then
+  # 如果模型是 ost，默认使用 ./ost_hypersearch
+  if [[ "$model_name" == "ost" ]]; then
+    log_dir="$root_dir/ost_hypersearch"
+  else
+    log_dir="$root_dir/logs"
+  fi
+fi
+mkdir -p "$log_dir"
 
 # ---------------------------------------------------------------
 # 基本合法性检查
@@ -199,13 +212,22 @@ str_array_to_yaml_list() {
   printf '%s' "$result"
 }
 
-# 为当前运行生成时间戳，并按模型名创建子目录
+# 为当前运行生成文件名和目录（优先使用tag，否则使用时间戳）
 timestamp=$(date +"%Y%m%d_%H%M%S")
-model_log_dir="$log_dir/$model_name"
+
+# 如果提供了tag，使用tag作为子目录名和文件名；否则使用model_name作为目录，时间戳作为文件名
+if [[ -n "$custom_tag" ]]; then
+  model_log_dir="$log_dir/$custom_tag"
+  file_basename="$custom_tag"
+else
+  model_log_dir="$log_dir/$model_name"
+  file_basename="${model_name}_${timestamp}"
+fi
+
 mkdir -p "$model_log_dir"
-log_file="$model_log_dir/${model_name}_${timestamp}.log"
-config_file="$model_log_dir/${model_name}_${timestamp}.yaml"
-pid_file="$model_log_dir/${model_name}_${timestamp}.pid"
+log_file="$model_log_dir/${file_basename}.log"
+config_file="$model_log_dir/${file_basename}.yaml"
+pid_file="$model_log_dir/${file_basename}.pid"
 
 runtime_strategy="auto"
 if (( np > 1 )); then
@@ -563,3 +585,7 @@ if $background; then
 else
   run_training_and_eval
 fi
+
+
+# 
+# bash train_ours.sh --model-name ost --lr 1e-3 -embed 256 --depth 8 --decoder-depth 2  --tag lr1e-3_embed256_depth8_dedep2
