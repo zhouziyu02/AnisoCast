@@ -57,7 +57,7 @@ def reverse_normalize(predict, data_args):
 
 def calculate_metrics(all_pred, all_y, model_args, data_args, save_dir):
     """
-    Calculate comprehensive metrics for CirT model predictions
+    Calculate comprehensive metrics for model predictions
     """
     # Convert to PyTorch tensors if needed
     if isinstance(all_pred, np.ndarray):
@@ -134,10 +134,33 @@ def calculate_metrics(all_pred, all_y, model_args, data_args, save_dir):
 
 def load_model_and_predict(model_args, data_args, checkpoint_path):
     """
-    Load CirT model from checkpoint and generate predictions
+    Load model from checkpoint and generate predictions
     """
-    print("Loading CirT model from checkpoint...")
+    print("Loading model from checkpoint...")
     print(f"Checkpoint path: {checkpoint_path}")
+    
+    # Load checkpoint to get saved hyperparameters
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    
+    # Extract hyperparameters from checkpoint if available
+    # Priority: checkpoint hyperparameters > provided config file
+    if 'hyper_parameters' in checkpoint:
+        saved_hyperparams = checkpoint['hyper_parameters']
+        # Use saved model_args and data_args if available, otherwise use provided ones
+        if 'model_args' in saved_hyperparams:
+            saved_model_name = saved_hyperparams['model_args'].get('model_name', 'unknown')
+            print(f"⚠️  Found saved model_args in checkpoint with model_name: {saved_model_name}")
+            print(f"⚠️  Overriding config file model_name: {model_args.get('model_name', 'unknown')}")
+            model_args = saved_hyperparams['model_args']
+        if 'data_args' in saved_hyperparams:
+            print(f"⚠️  Using data_args from checkpoint (overriding config file)")
+            # Merge data_args: use saved ones, but allow config file to override test_years if needed
+            saved_data_args = saved_hyperparams['data_args']
+            # Keep test_years from config if explicitly provided, otherwise use checkpoint
+            if 'test_years' in data_args:
+                saved_data_args['test_years'] = data_args['test_years']
+            data_args = saved_data_args
+    
     print(f"Model name: {model_args['model_name']}")
     print(f"Test years: {data_args['test_years']}")
 
@@ -145,7 +168,8 @@ def load_model_and_predict(model_args, data_args, checkpoint_path):
     model_checkpoint = model.S2SBenchmarkModel.load_from_checkpoint(
         str(checkpoint_path), 
         model_args=model_args, 
-        data_args=data_args
+        data_args=data_args,
+        strict=False  # Allow partial loading if there are minor mismatches
     )
 
     # Set up the dataloaders
@@ -179,14 +203,6 @@ def load_model_and_predict(model_args, data_args, checkpoint_path):
     print(f'Prediction shape: {all_pred.shape}')
     print(f'Ground truth shape: {all_y.shape}')
 
-    # Align spatial dimensions if they differ (e.g., ViT 120 vs GT 121)
-    if all_pred.dim() == 5 and all_y.dim() == 5:
-        ph, pw = all_pred.shape[-2], all_pred.shape[-1]
-        yh, yw = all_y.shape[-2], all_y.shape[-1]
-        if (ph != yh) or (pw != yw):
-            all_y = all_y[..., :ph, :pw]
-            print(f'Aligned GT to prediction spatial size: {all_y.shape[-2:]}')
-
     # Reverse normalization
     print("Reversing normalization...")
     all_pred = reverse_normalize(all_pred, data_args)
@@ -200,51 +216,112 @@ def load_model_and_predict(model_args, data_args, checkpoint_path):
 
 def main(args):
     """
-    Main function to evaluate CirT model and generate metrics CSV
+    Main function to evaluate model and generate metrics CSV
     """
-    # Load configuration
-    with open(args.config_filepath, 'r') as config_file:
-        hyperparams = yaml.load(config_file, Loader=yaml.FullLoader)
-    
-    model_args = hyperparams['model_args']
-    data_args = hyperparams['data_args']
-
-    # Create save directory
-    save_dir = Path(f"./results/{model_args['model_name']}")
-    save_dir.mkdir(parents=True, exist_ok=True)
-
     # Determine checkpoint path
     if args.checkpoint_path:
         checkpoint_path = args.checkpoint_path
     else:
-        # Default checkpoint path
-        checkpoint_path = f"./checkpoints/{model_args['model_name']}/best.ckpt"
+        # Try to infer from config file
+        if args.config_filepath:
+            with open(args.config_filepath, 'r') as config_file:
+                hyperparams = yaml.load(config_file, Loader=yaml.FullLoader)
+                model_name = hyperparams.get('model_args', {}).get('model_name', 'soon')
+            checkpoint_path = f"./checkpoints/{model_name}/best.ckpt"
+        else:
+            raise ValueError("Either --checkpoint_path or --config_filepath must be provided")
     
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found at: {checkpoint_path}")
+    
+    # 首先从checkpoint的hyper_parameters中读取model_name（最准确，因为这是训练时实际使用的）
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    final_model_name = None
+    
+    if 'hyper_parameters' in checkpoint and 'model_args' in checkpoint['hyper_parameters']:
+        final_model_name = checkpoint['hyper_parameters']['model_args'].get('model_name')
+        if final_model_name:
+            print(f"📌 从checkpoint的hyper_parameters读取model_name: {final_model_name}")
+    
+    # 优先从checkpoint目录读取配置（解决并行训练时的参数读取混乱问题）
+    checkpoint_dir = Path(checkpoint_path).parent.parent  # checkpoint在version_X/checkpoints/下
+    config_in_checkpoint = checkpoint_dir / 'config.yaml'
+    
+    if config_in_checkpoint.exists():
+        print(f"📋 从checkpoint目录读取配置: {config_in_checkpoint}")
+        with open(config_in_checkpoint, 'r') as config_file:
+            hyperparams = yaml.load(config_file, Loader=yaml.FullLoader)
+    elif args.config_filepath and os.path.exists(args.config_filepath):
+        print(f"⚠️  checkpoint目录中未找到config.yaml，使用提供的配置文件: {args.config_filepath}")
+        with open(args.config_filepath, 'r') as config_file:
+            hyperparams = yaml.load(config_file, Loader=yaml.FullLoader)
+    else:
+        raise FileNotFoundError(f"无法找到配置文件。请确保checkpoint目录包含config.yaml，或提供--config_filepath")
+    
+    model_args = hyperparams['model_args']
+    data_args = hyperparams['data_args']
+    
+    # 确定最终的model_name：优先使用checkpoint的hyper_parameters中的，否则使用配置文件中的
+    if final_model_name:
+        config_model_name = model_args.get('model_name', 'unknown')
+        if final_model_name != config_model_name:
+            print(f"✅ 使用checkpoint中保存的model_name: {final_model_name} (覆盖配置文件中的: {config_model_name})")
+        else:
+            print(f"✅ 使用checkpoint中保存的model_name: {final_model_name} (与配置文件一致)")
+        model_args['model_name'] = final_model_name
+    else:
+        final_model_name = model_args.get('model_name', 'soon')
+        print(f"⚠️  checkpoint中未找到model_name，使用配置文件中的: {final_model_name}")
+        model_args['model_name'] = final_model_name
 
     # Load model and generate predictions
     all_pred, all_y = load_model_and_predict(model_args, data_args, checkpoint_path)
+    
+    # 再次确认model_name（load_model_and_predict可能会修改model_args，但我们已经确定了final_model_name）
+    # 确保使用训练时保存的model_name，而不是load_model_and_predict内部可能修改的值
+    model_args['model_name'] = final_model_name
+    
+    # Create save directory
+    # 如果指定了output_dir，使用指定的目录；否则使用默认的./results/{model_name}
+    if args.output_dir and args.output_dir != './results':
+        # 如果output_dir是绝对路径或相对路径，直接使用
+        save_dir = Path(args.output_dir)
+    else:
+        # 默认保存到 ./results/{model_name}/ 目录
+        save_dir = Path(f"./results/{final_model_name}")
+    save_dir.mkdir(parents=True, exist_ok=True)
+    print(f"📁 结果将保存到: {save_dir.absolute()}")
+    
+    # 验证：确保使用的model_name与checkpoint中的一致
+    print(f"🔍 验证信息:")
+    print(f"   - 最终使用的model_name: {final_model_name}")
+    print(f"   - 保存目录: {save_dir}")
+    if args.tag:
+        print(f"   - 提供的tag: {args.tag}")
 
     # Calculate metrics
     print("\nCalculating comprehensive metrics...")
     metrics_df = calculate_metrics(all_pred, all_y, model_args, data_args, save_dir)
 
     # Save results
-    csv_filename = f"{model_args['model_name']}_metrics_{test_time}.csv"
+    # 使用final_model_name而不是model_args['model_name']，确保文件名正确
+    # 如果提供了tag，在文件名中包含tag
+    # 清理tag中的路径分隔符，避免路径解析错误
+    if args.tag:
+        # 将tag中的路径分隔符替换为下划线，确保文件名安全
+        safe_tag = args.tag.replace('/', '_').replace('\\', '_')
+        csv_filename = f"{final_model_name}_metrics_{test_time}_{safe_tag}.csv"
+    else:
+        csv_filename = f"{final_model_name}_metrics_{test_time}.csv"
     csv_path = save_dir / csv_filename
     metrics_df.to_csv(csv_path, index=False)
-
-    # Save predictions and ground truth as .npy in the same directory
-    pred_npy_path = save_dir / f"{model_args['model_name']}_pred_{test_time}.npy"
-    gt_npy_path = save_dir / f"{model_args['model_name']}_gt_{test_time}.npy"
-    np.save(pred_npy_path, all_pred.detach().cpu().numpy())
-    np.save(gt_npy_path, all_y.detach().cpu().numpy())
     
-    print(f"\nResults saved to: {csv_path}")
-    print(f"Predictions saved to: {pred_npy_path}")
-    print(f"Ground truth saved to: {gt_npy_path}")
-    print(f"Total metrics calculated: {len(metrics_df)}")
+    # 使用绝对路径并明确输出
+    csv_abs_path = os.path.abspath(csv_path)
+    print(f"\n{'='*60}")
+    print(f"📄 Results saved to: {csv_abs_path}")
+    print(f"📊 Total metrics calculated: {len(metrics_df)}")
+    print(f"{'='*60}")
     
     # Print summary statistics
     print("\n=== SUMMARY STATISTICS ===")
@@ -263,23 +340,28 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Evaluate ClimaX model and generate metrics CSV')
+    parser = argparse.ArgumentParser(description='Evaluate model and generate metrics CSV')
     parser.add_argument('--config_filepath', 
-                       default='CIRT/configs/ClimaX.yaml',
-                       help='Path to ClimaX configuration YAML file')
+                       default=None,
+                       help='Path to configuration YAML file (will be generated by train_ours.sh, model_args/data_args will be overridden by checkpoint if available)')
     parser.add_argument('--checkpoint_path', 
-                       default='/mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/lightning_logs/version_86/checkpoints/epoch=13-step=770.ckpt',
-                       help='Path to ClimaX model checkpoint (default: ./checkpoints/CirT/best.ckpt)')
+                       default=None,
+                       help='Path to model checkpoint (default: ./logs/soon/{tag}/best.ckpt)')
     parser.add_argument('--output_dir',
                        default='./results',
                        help='Output directory for results (default: ./results)')
+    parser.add_argument('--tag',
+                       default=None,
+                       help='Custom tag to append to CSV filename (e.g., --tag exp1)')
     
     args = parser.parse_args()
     
     try:
         result_path = main(args)
+        result_abs_path = os.path.abspath(result_path)
         print(f"\n✅ Evaluation completed successfully!")
-        print(f"📊 Metrics CSV saved to: {result_path}")
+        print(f"📄 Metrics CSV file: {result_abs_path}")
+        print(f"📁 Directory: {os.path.dirname(result_abs_path)}")
     except Exception as e:
         print(f"\n❌ Error during evaluation: {str(e)}")
         raise

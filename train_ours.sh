@@ -31,7 +31,7 @@ np=${NP:-8}
 use_tensorboard=false
 background=true
 custom_tag=""
-model_name="ost"  # 默认使用ours模型，可设置为ost
+model_name="soon"  # 默认使用SOON模型
 
 # 固定数据配置
 img_size_h=121
@@ -73,8 +73,8 @@ Options:
   --no-tensorboard                  禁用TensorBoard
   --foreground                      前台运行 (默认后台)
   --tag <string>                    自定义标签 (写入日志和PID)
-  --model-name <string>             模型名称 (ours / ost / CirT，默认: ours)
-  --log-dir <string>                自定义日志目录 (默认: ./logs，ost模型默认: ./ost_hypersearch)
+  --model-name <string>             模型名称 (soon，默认: soon)
+  --log-dir <string>                自定义日志目录 (默认: ./logs)
   -h, --help                        查看帮助
 EOF
 }
@@ -146,9 +146,9 @@ done
 
 # 设置默认日志目录
 if [[ -z "$log_dir" ]]; then
-  # 如果模型是 ost，默认使用 ./ost_hypersearch
-  if [[ "$model_name" == "ost" ]]; then
-    log_dir="$root_dir/ost_hypersearch"
+  # 如果模型是 soon，默认使用 ./logs/soon
+  if [[ "$model_name" == "soon" ]]; then
+    log_dir="$root_dir/logs/soon"
   else
     log_dir="$root_dir/logs"
   fi
@@ -159,9 +159,9 @@ mkdir -p "$log_dir"
 # 基本合法性检查
 # ---------------------------------------------------------------
 
-# 验证模型名称（支持 ours / ost / CirT）
-if [[ "$model_name" != "ours" && "$model_name" != "ost" && "$model_name" != "CirT" ]]; then
-  echo "❌ 错误: 不支持的模型名称 '$model_name'。支持: ours, ost, CirT" >&2
+# 验证模型名称（支持 soon）
+if [[ "$model_name" != "soon" ]]; then
+  echo "❌ 错误: 不支持的模型名称 '$model_name'。支持: soon" >&2
   exit 1
 fi
 
@@ -588,4 +588,4 @@ fi
 
 
 # 
-# bash train_ours.sh --model-name ost --lr 1e-3 -embed 256 --depth 8 --decoder-depth 2  --tag lr1e-3_embed256_depth8_dedep2
+# bash train_ours.sh --model-name soon --lr 1e-3 --embed 256 --depth 7 --decoder-depth 1 --tag lr1e-3_embed256_depth7_dedep1
