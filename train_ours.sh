@@ -6,10 +6,10 @@ set -euo pipefail
 
 self_name=$(basename "$0")
 root_dir=$(cd "$(dirname "$0")" && pwd)
-log_dir=""  # 将在参数解析后设置
+log_dir=""  # Will be set after argument parsing
 
 # ---------------------------------------------------------------
-# 默认参数 (可通过 CLI 覆盖)
+# Default parameters (can be overridden via CLI)
 # ---------------------------------------------------------------
 learning_rate="1e-3"
 weight_decay="1e-5"
@@ -31,14 +31,14 @@ np=${NP:-8}
 use_tensorboard=false
 background=true
 custom_tag=""
-model_name="soon"  # 默认使用SOON模型
+model_name="soon"  # Default to SOON model
 
-# 固定数据配置
+# Fixed data configuration
 img_size_h=121
 img_size_w=240
 input_size=63
 output_size=63
-data_dir='/mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/data/S2S'
+data_dir='./data/S2S'  # Update this path to your data directory
 train_years=(1979 1980 1981 1982 1983 1984 1985 1986 1987 1988 1989 1990 1991 1992 1993 1994 1995 1996 1997 1998 1999 2000 2001 2002 2003 2004 2005 2006 2007 2008 2009 2010 2011 2012 2013 2014 2015 2016)
 val_years=(2017)
 test_years=(2018)
@@ -53,29 +53,29 @@ usage() {
 Usage: bash $self_name [options]
 
 Options:
-  --lr, --learning-rate <float>     学习率 (示例: --lr 5e-4 或 --lr5e-4)
-  --batch, --batch-size <int>       批次大小
-  --epochs <int>                    训练轮数
-  --embed, --embed-dim <int>        嵌入维度 (需能整除注意力头数)
-  --patch, --patch-size <int>       patch大小
-  --depth <int>                     Transformer层数
-  --decoder-depth <int>             解码器层数
-  --heads, --num-heads <int>        注意力头数
-  --mlp-ratio <float>               MLP扩展比例
-  --drop-path <float>               DropPath率
-  --drop-rate <float>               Dropout率
-  --pred-len <int>                  预测步长
-  --t-max <int>                     Cosine调度器T_max
-  --weight-decay <float>            权重衰减
-  --grad-clip <float>               梯度裁剪阈值
-  --np <int>                        GPU数量
-  --tensorboard                     启用TensorBoard
-  --no-tensorboard                  禁用TensorBoard
-  --foreground                      前台运行 (默认后台)
-  --tag <string>                    自定义标签 (写入日志和PID)
-  --model-name <string>             模型名称 (soon，默认: soon)
-  --log-dir <string>                自定义日志目录 (默认: ./logs)
-  -h, --help                        查看帮助
+  --lr, --learning-rate <float>     Learning rate (e.g., --lr 5e-4 or --lr5e-4)
+  --batch, --batch-size <int>       Batch size
+  --epochs <int>                    Number of epochs
+  --embed, --embed-dim <int>        Embedding dimension (must be divisible by number of heads)
+  --patch, --patch-size <int>       Patch size
+  --depth <int>                     Number of Transformer layers
+  --decoder-depth <int>             Decoder depth
+  --heads, --num-heads <int>        Number of attention heads
+  --mlp-ratio <float>               MLP expansion ratio
+  --drop-path <float>               DropPath rate
+  --drop-rate <float>               Dropout rate
+  --pred-len <int>                  Prediction length
+  --t-max <int>                     Cosine scheduler T_max
+  --weight-decay <float>            Weight decay
+  --grad-clip <float>               Gradient clipping threshold
+  --np <int>                        Number of GPUs
+  --tensorboard                     Enable TensorBoard
+  --no-tensorboard                  Disable TensorBoard
+  --foreground                      Run in foreground (default: background)
+  --tag <string>                    Custom tag (written to logs and PID)
+  --model-name <string>             Model name (soon, default: soon)
+  --log-dir <string>                Custom log directory (default: ./logs)
+  -h, --help                        Show help
 EOF
 }
 
@@ -144,9 +144,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# 设置默认日志目录
+# Set default log directory
 if [[ -z "$log_dir" ]]; then
-  # 如果模型是 soon，默认使用 ./logs/soon
+  # If model is soon, default to ./logs/soon
   if [[ "$model_name" == "soon" ]]; then
     log_dir="$root_dir/logs/soon"
   else
@@ -156,35 +156,35 @@ fi
 mkdir -p "$log_dir"
 
 # ---------------------------------------------------------------
-# 基本合法性检查
+# Basic validation checks
 # ---------------------------------------------------------------
 
-# 验证模型名称（支持 soon）
+# Validate model name (supports soon)
 if [[ "$model_name" != "soon" ]]; then
-  echo "❌ 错误: 不支持的模型名称 '$model_name'。支持: soon" >&2
+  echo "Error: Unsupported model name '$model_name'. Supported: soon" >&2
   exit 1
 fi
 
-# 可选：检查 CUDA_VISIBLE_DEVICES 与 --np 一致性（避免误配）
+# Optional: Check CUDA_VISIBLE_DEVICES consistency with --np (avoid misconfiguration)
 if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
   IFS=',' read -ra _cudas <<< "$CUDA_VISIBLE_DEVICES"
   visible_n=${#_cudas[@]}
   if (( np > visible_n )); then
-    echo "❌ 错误: --np=$np 但 CUDA_VISIBLE_DEVICES 只暴露了 $visible_n 张卡: $CUDA_VISIBLE_DEVICES" >&2
+    echo "Error: --np=$np but CUDA_VISIBLE_DEVICES only exposes $visible_n GPUs: $CUDA_VISIBLE_DEVICES" >&2
     exit 1
   fi
 fi
 
 # ---------------------------------------------------------------
-# DDP 端口防冲突（单机多任务/后台并行必备）
+# DDP port conflict prevention (required for multi-task/background parallel execution)
 # ---------------------------------------------------------------
 if (( np > 1 )); then
   export MASTER_ADDR=${MASTER_ADDR:-127.0.0.1}
 
-  # 如果外部没指定 MASTER_PORT，则自动生成一个低冲突高位端口
+  # If MASTER_PORT is not specified externally, auto-generate a low-conflict high port
   if [[ -z "${MASTER_PORT:-}" ]]; then
-    # 使用 epoch 秒 + 当前脚本 PID 生成一个较稳定且低冲突的端口
-    # 范围: 20000 - 39999
+    # Use epoch seconds + current script PID to generate a stable and low-conflict port
+    # Range: 20000 - 39999
     base=$(( (10#$(date +%s) + $$) % 20000 ))
     export MASTER_PORT=$((20000 + base))
   fi
@@ -212,10 +212,10 @@ str_array_to_yaml_list() {
   printf '%s' "$result"
 }
 
-# 为当前运行生成文件名和目录（优先使用tag，否则使用时间戳）
+# Generate filename and directory for current run (prefer tag, otherwise use timestamp)
 timestamp=$(date +"%Y%m%d_%H%M%S")
 
-# 如果提供了tag，使用tag作为子目录名和文件名；否则使用model_name作为目录，时间戳作为文件名
+# If tag is provided, use tag as subdirectory name and filename; otherwise use model_name as directory, timestamp as filename
 if [[ -n "$custom_tag" ]]; then
   model_log_dir="$log_dir/$custom_tag"
   file_basename="$custom_tag"
@@ -315,7 +315,7 @@ SET
 )
 
 echo "=========================================="
-echo "🚀 ${model_name} 模型训练"
+echo "Training ${model_name} model"
 echo "=========================================="
 echo "$settings_snapshot"
 echo "=========================================="
@@ -330,7 +330,7 @@ fi
 $use_tensorboard && common_args+=(--use_tensorboard)
 
 if (( np > 1 )); then
-  # 显式指定 master_port，避免同机多任务端口冲突
+  # Explicitly specify master_port to avoid port conflicts in multi-task scenarios
   launch_cmd=(torchrun --standalone --nproc_per_node="$np" --master_port="$MASTER_PORT" train.py)
 else
   launch_cmd=(python3 -u train.py)
@@ -340,59 +340,59 @@ launch_cmd+=("${common_args[@]}")
 find_checkpoint_by_config() {
   local config_path="$1"
   local start_time="$2"
-  local expected_model_name="$3"  # 新增：期望的模型名称
+  local expected_model_name="$3"  # Expected model name
 
-  # 计算当前config文件的特征值（用于匹配）
+  # Calculate hash of current config file (for matching)
   local config_hash
   config_hash=$(md5sum "$config_path" 2>/dev/null | cut -d' ' -f1 || md5 -q "$config_path" 2>/dev/null)
 
-  # 从config文件中提取model_name（用于双重验证）
+  # Extract model_name from config file (for double verification)
   local config_model_name
   config_model_name=$(grep -E "^model_name:" "$config_path" 2>/dev/null | head -1 | sed -E "s/.*model_name:[[:space:]]*['\"]?([^'\"]+)['\"]?.*/\1/" | tr -d ' ')
 
-  # 查找lightning_logs中所有version目录（按时间倒序，最新的在前）
+  # Find all version directories in lightning_logs (sorted by time, newest first)
   local version_dirs=()
   mapfile -t version_dirs < <(find lightning_logs -maxdepth 1 -type d -name "version_*" -printf '%T@ %p\n' 2>/dev/null | \
                         sort -rn | cut -d' ' -f2- | head -20)
 
-  # 如果find不支持-printf，使用ls
+  # If find doesn't support -printf, use ls
   if [[ ${#version_dirs[@]} -eq 0 ]]; then
     mapfile -t version_dirs < <(ls -td lightning_logs/version_* 2>/dev/null | head -20)
   fi
 
-  # 方法1: 通过config.yaml内容匹配 + model_name验证 + 时间戳验证（最可靠）
+  # Method 1: Match by config.yaml content + model_name verification + timestamp verification (most reliable)
   for version_dir in "${version_dirs[@]}"; do
     local version_config="$version_dir/config.yaml"
     if [[ -f "$version_config" ]]; then
       local version_hash
       version_hash=$(md5sum "$version_config" 2>/dev/null | cut -d' ' -f1 || md5 -q "$version_config" 2>/dev/null)
 
-      # 如果config文件内容相同
-      if [[ "$config_hash" == "$version_hash" ]]; then
-        # 验证version目录中的model_name是否匹配（双重验证）
-        local version_model_name
-        version_model_name=$(grep -E "^model_name:" "$version_config" 2>/dev/null | head -1 | sed -E "s/.*model_name:[[:space:]]*['\"]?([^'\"]+)['\"]?.*/\1/" | tr -d ' ')
+        # If config file content is the same
+        if [[ "$config_hash" == "$version_hash" ]]; then
+          # Verify if model_name in version directory matches (double verification)
+          local version_model_name
+          version_model_name=$(grep -E "^model_name:" "$version_config" 2>/dev/null | head -1 | sed -E "s/.*model_name:[[:space:]]*['\"]?([^'\"]+)['\"]?.*/\1/" | tr -d ' ')
 
-        # 如果提供了期望的model_name，必须匹配
-        if [[ -n "$expected_model_name" && -n "$version_model_name" ]]; then
-          if [[ "$expected_model_name" != "$version_model_name" ]]; then
-            continue  # model_name不匹配，跳过这个version目录
+          # If expected model_name is provided, it must match
+          if [[ -n "$expected_model_name" && -n "$version_model_name" ]]; then
+            if [[ "$expected_model_name" != "$version_model_name" ]]; then
+              continue  # model_name doesn't match, skip this version directory
+            fi
           fi
-        fi
 
-        # 验证时间戳：config.yaml的创建时间应该在训练开始之后（允许5分钟误差）
-        local version_mtime
-        version_mtime=$(stat -c %Y "$version_config" 2>/dev/null || stat -f %m "$version_config" 2>/dev/null)
-        if [[ -n "$version_mtime" && $version_mtime -lt $((start_time - 300)) ]]; then
-          continue  # 时间戳不匹配，跳过
-        fi
+          # Verify timestamp: config.yaml creation time should be after training start (allow 5 min error)
+          local version_mtime
+          version_mtime=$(stat -c %Y "$version_config" 2>/dev/null || stat -f %m "$version_config" 2>/dev/null)
+          if [[ -n "$version_mtime" && $version_mtime -lt $((start_time - 300)) ]]; then
+            continue  # Timestamp doesn't match, skip
+          fi
 
-        # 查找该目录下的checkpoint
-        # 优先查找最佳checkpoint（排除last.ckpt，因为现在只保存最佳模型）
-        local best_checkpoint
-        best_checkpoint=$(find "$version_dir/checkpoints" -name "epoch=*-step=*.ckpt" -type f 2>/dev/null | sort -r | head -1)
-        if [[ -n "$best_checkpoint" && -f "$best_checkpoint" ]]; then
-          # 验证checkpoint的修改时间应该在训练开始之后
+          # Find checkpoint in this directory
+          # Prioritize finding best checkpoint (exclude last.ckpt, as we only save best model now)
+          local best_checkpoint
+          best_checkpoint=$(find "$version_dir/checkpoints" -name "epoch=*-step=*.ckpt" -type f 2>/dev/null | sort -r | head -1)
+          if [[ -n "$best_checkpoint" && -f "$best_checkpoint" ]]; then
+            # Verify checkpoint modification time should be after training start
           local ckpt_mtime
           ckpt_mtime=$(stat -c %Y "$best_checkpoint" 2>/dev/null || stat -f %m "$best_checkpoint" 2>/dev/null)
           if [[ -n "$ckpt_mtime" && $ckpt_mtime -ge $start_time ]]; then
@@ -401,7 +401,7 @@ find_checkpoint_by_config() {
           fi
         fi
 
-        # 如果没有找到epoch=*-step=*.ckpt格式的，回退到查找所有.ckpt文件
+          # If epoch=*-step=*.ckpt format not found, fallback to finding all .ckpt files
         local checkpoints=()
         mapfile -t checkpoints < <(find "$version_dir/checkpoints" -name "*.ckpt" -type f 2>/dev/null | sort -r)
         if [[ ${#checkpoints[@]} -gt 0 ]]; then
@@ -416,25 +416,25 @@ find_checkpoint_by_config() {
     fi
   done
 
-  # 方法2: 通过时间戳 + model_name匹配（如果config内容匹配失败）
+  # Method 2: Match by timestamp + model_name (if config content matching fails)
   for version_dir in "${version_dirs[@]}"; do
     local version_config="$version_dir/config.yaml"
     if [[ -f "$version_config" ]]; then
       local version_mtime
       version_mtime=$(stat -c %Y "$version_config" 2>/dev/null || stat -f %m "$version_config" 2>/dev/null)
 
-      # 如果version的config.yaml创建时间在训练开始之后（允许5分钟误差）
-      if [[ -n "$version_mtime" && $version_mtime -ge $((start_time - 300)) ]]; then
-        # 验证model_name是否匹配
-        if [[ -n "$expected_model_name" ]]; then
-          local version_model_name
-          version_model_name=$(grep -E "^model_name:" "$version_config" 2>/dev/null | head -1 | sed -E "s/.*model_name:[[:space:]]*['\"]?([^'\"]+)['\"]?.*/\1/" | tr -d ' ')
-          if [[ -n "$version_model_name" && "$expected_model_name" != "$version_model_name" ]]; then
-            continue  # model_name不匹配，跳过
+        # If version's config.yaml creation time is after training start (allow 5 min error)
+        if [[ -n "$version_mtime" && $version_mtime -ge $((start_time - 300)) ]]; then
+          # Verify if model_name matches
+          if [[ -n "$expected_model_name" ]]; then
+            local version_model_name
+            version_model_name=$(grep -E "^model_name:" "$version_config" 2>/dev/null | head -1 | sed -E "s/.*model_name:[[:space:]]*['\"]?([^'\"]+)['\"]?.*/\1/" | tr -d ' ')
+            if [[ -n "$version_model_name" && "$expected_model_name" != "$version_model_name" ]]; then
+              continue  # model_name doesn't match, skip
+            fi
           fi
-        fi
 
-        # 优先查找最佳checkpoint（排除last.ckpt）
+          # Prioritize finding best checkpoint (exclude last.ckpt)
         local best_checkpoint
         best_checkpoint=$(find "$version_dir/checkpoints" -name "epoch=*-step=*.ckpt" -type f 2>/dev/null | sort -r | head -1)
         if [[ -n "$best_checkpoint" && -f "$best_checkpoint" ]]; then
@@ -446,7 +446,7 @@ find_checkpoint_by_config() {
           fi
         fi
 
-        # 如果没有找到epoch=*-step=*.ckpt格式的，回退到查找所有.ckpt文件
+          # If epoch=*-step=*.ckpt format not found, fallback to finding all .ckpt files
         local checkpoints=()
         mapfile -t checkpoints < <(find "$version_dir/checkpoints" -name "*.ckpt" -type f 2>/dev/null | sort -r)
         if [[ ${#checkpoints[@]} -gt 0 ]]; then
@@ -467,10 +467,10 @@ find_checkpoint_by_config() {
 run_training_and_eval() {
   local training_start_time
   training_start_time=$(date +%s)
-  local checkpoint_version_dir=""  # 用于存储checkpoint的version目录路径
+  local checkpoint_version_dir=""  # Store checkpoint version directory path
   local checkpoint_info_file="$config_file.checkpoint_dir"
 
-  # 清理可能存在的旧文件
+  # Clean up any existing old files
   rm -f "$checkpoint_info_file"
 
   {
@@ -479,13 +479,13 @@ run_training_and_eval() {
     echo
     echo
 
-    # 运行训练命令，同时捕获checkpoint路径
+    # Run training command while capturing checkpoint path
     "${launch_cmd[@]}" 2>&1 | tee >(while IFS= read -r line; do
       echo "$line"
-      # 从训练输出中提取checkpoint目录路径
-      if [[ "$line" =~ 💾.*配置已保存到checkpoint目录:\ ([^[:space:]]+) ]]; then
+      # Extract checkpoint directory path from training output
+      if [[ "$line" =~ Config.*saved.*checkpoint.*directory:\ ([^[:space:]]+) ]]; then
         local extracted_path="${BASH_REMATCH[1]}"
-        # 如果是config.yaml路径，转换为version目录
+        # If it's config.yaml path, convert to version directory
         extracted_path="${extracted_path%/config.yaml}"
         echo "$extracted_path" > "$checkpoint_info_file"
       fi
@@ -495,38 +495,38 @@ run_training_and_eval() {
     echo
     echo "Training exit code: $train_exit_code"
 
-    # 读取保存的checkpoint目录路径
+    # Read saved checkpoint directory path
     if [[ -f "$checkpoint_info_file" ]]; then
       checkpoint_version_dir=$(cat "$checkpoint_info_file" 2>/dev/null)
       rm -f "$checkpoint_info_file"
     fi
 
     if [[ $train_exit_code -eq 0 ]]; then
-      echo "🔍 查找当前训练任务对应的checkpoint..."
-      echo "📋 期望的模型名称: $model_name"
+      echo "Searching for checkpoint corresponding to current training task..."
+      echo "Expected model name: $model_name"
 
       local found_checkpoint=""
 
-      # 方法1: 如果从训练日志中提取到了checkpoint目录，直接使用
+      # Method 1: If checkpoint directory extracted from training log, use it directly
       if [[ -n "$checkpoint_version_dir" && -d "$checkpoint_version_dir" ]]; then
-        echo "📁 使用训练时保存的checkpoint目录: $checkpoint_version_dir"
-        # 查找该目录下的最佳checkpoint
+        echo "Using checkpoint directory saved during training: $checkpoint_version_dir"
+        # Find best checkpoint in this directory
         found_checkpoint=$(find "$checkpoint_version_dir/checkpoints" -name "epoch=*-step=*.ckpt" -type f 2>/dev/null | sort -r | head -1)
         if [[ -z "$found_checkpoint" || ! -f "$found_checkpoint" ]]; then
-          # 如果没有找到epoch=*-step=*.ckpt格式的，查找所有.ckpt文件
+          # If epoch=*-step=*.ckpt format not found, find all .ckpt files
           found_checkpoint=$(find "$checkpoint_version_dir/checkpoints" -name "*.ckpt" -type f 2>/dev/null | sort -r | head -1)
         fi
       fi
 
-      # 方法2: 如果方法1失败，使用原来的查找逻辑
+      # Method 2: If method 1 fails, use original search logic
       if [[ -z "$found_checkpoint" || ! -f "$found_checkpoint" ]]; then
-        echo "⚠️  未从训练日志中提取到checkpoint路径，使用自动查找模式..."
+        echo "Checkpoint path not extracted from training log, using auto-search mode..."
         found_checkpoint=$(find_checkpoint_by_config "$config_file" "$training_start_time" "$model_name")
       fi
 
       if [[ -n "$found_checkpoint" && -f "$found_checkpoint" ]]; then
-        echo "✅ 找到checkpoint: $found_checkpoint"
-        echo "🎯 开始自动评估 $model_name 模型..."
+        echo "Found checkpoint: $found_checkpoint"
+        echo "Starting automatic evaluation of $model_name model..."
         if [[ -n "$custom_tag" ]]; then
           python3 auto_evaluate.py --model_type "$model_name" --config_file "$config_file" --checkpoint_path "$found_checkpoint" --tag "$custom_tag"
         else
@@ -534,7 +534,7 @@ run_training_and_eval() {
         fi
         return $?
       else
-        echo "⚠️  未找到对应的checkpoint，使用自动查找模式..."
+        echo "Corresponding checkpoint not found, using auto-search mode..."
         if [[ -n "$custom_tag" ]]; then
           python3 auto_evaluate.py --model_type "$model_name" --config_file "$config_file" --tag "$custom_tag"
         else
@@ -543,7 +543,7 @@ run_training_and_eval() {
         return $?
       fi
     else
-      echo "❌ 训练失败"
+        echo "Training failed"
       return $train_exit_code
     fi
   } | tee "$log_file"
@@ -552,16 +552,16 @@ run_training_and_eval() {
 }
 
 if $background; then
-  # 确保日志文件目录存在
+  # Ensure log file directory exists
   mkdir -p "$(dirname "$log_file")"
-  # 创建空日志文件，确保它存在
+  # Create empty log file to ensure it exists
   touch "$log_file"
 
-  # 后台运行时，所有输出重定向到日志文件，不打印到终端
+  # When running in background, redirect all output to log file, don't print to terminal
   run_training_and_eval > "$log_file" 2>&1 &
   bg_pid=$!
 
-  # pid_file已经在上面定义了，使用model_log_dir下的路径
+  # pid_file is already defined above, use path under model_log_dir
   {
     echo "pid=$bg_pid"
     echo "log=$log_file"
@@ -576,12 +576,12 @@ if $background; then
     echo "EOF"
   } > "$pid_file"
 
-  # 只在终端显示启动信息，不显示训练输出
-  echo "✅ Training started in background"
-  echo "📝 Log: $log_file"
-  echo "🆔 PID: $bg_pid"
-  echo "📄 Settings recorded in: $pid_file"
-  echo "🔍 查看日志: tail -f $log_file"
+  # Only show startup info in terminal, don't show training output
+  echo "Training started in background"
+  echo "Log: $log_file"
+  echo "PID: $bg_pid"
+  echo "Settings recorded in: $pid_file"
+  echo "View log: tail -f $log_file"
 else
   run_training_and_eval
 fi

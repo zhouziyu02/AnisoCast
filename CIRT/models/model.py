@@ -24,7 +24,7 @@ class S2SBenchmarkModel(pl.LightningModule):
         # Initialize model
         input_size = self.model_args['input_size'] 
         output_size = self.model_args['output_size'] 
-                
+        
         if 'soon' == self.model_args['model_name']:
             from .soon import Model as SOONModel
             # Read model architecture parameters from model_args, use defaults if not provided
@@ -51,45 +51,45 @@ class S2SBenchmarkModel(pl.LightningModule):
         return loss
     
     def forward(self, x, u=None, v=None, radial=None, edges=None, edge_attr=None, timestamp=None, lead_times=None):
-        return self.model(x)
+            return self.model(x)
 
     def training_step(self, batch, batch_idx):
         timestamp, x, y = batch  # x: [batch, input_size, height, width] y: [batch, step, input_size, height, width]
         preds = self(x)
         
-        # Align target spatial dims to preds if necessary
-        if preds.dim() == 5:
-            y = y[:, :, :, :preds.shape[3], :preds.shape[4]]
-        elif preds.dim() == 4 and y.dim() == 5:
-            y = y[:, 0]
+                # Align target spatial dims to preds if necessary
+                if preds.dim() == 5:
+                    y = y[:, :, :, :preds.shape[3], :preds.shape[4]]
+                elif preds.dim() == 4 and y.dim() == 5:
+                    y = y[:, 0]
         
         loss = self.loss(preds, y)
-        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        return loss
+            self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+            return loss
 
     def validation_step(self, batch, batch_idx):
         timestamp, x, y = batch
         preds = self(x)
         
-        # Align target spatial dims to preds if necessary
-        if preds.dim() == 5:
-            y = y[:, :, :, :preds.shape[3], :preds.shape[4]]
-        elif preds.dim() == 4 and y.dim() == 5:
-            y = y[:, 0]
-        
+                # Align target spatial dims to preds if necessary
+                if preds.dim() == 5:
+                    y = y[:, :, :, :preds.shape[3], :preds.shape[4]]
+                elif preds.dim() == 4 and y.dim() == 5:
+                    y = y[:, 0]
+            
         loss = self.loss(preds, y)
-        self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        return loss
+            self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+            return loss
 
     def test_step(self, batch, batch_idx):
         timestamp, x, y = batch
         preds = self(x)
         
-        # Align target spatial dims to preds if necessary
-        if preds.dim() == 5:
-            y = y[:, :, :, :preds.shape[3], :preds.shape[4]]
-        elif preds.dim() == 4 and y.dim() == 5:
-            y = y[:, 0]
+            # Align target spatial dims to preds if necessary
+            if preds.dim() == 5:
+                y = y[:, :, :, :preds.shape[3], :preds.shape[4]]
+            elif preds.dim() == 4 and y.dim() == 5:
+                y = y[:, 0]
         
         loss = self.val_loss(preds, y)
         return loss
@@ -128,36 +128,36 @@ class S2SBenchmarkModel(pl.LightningModule):
         # Use standard dataset
         self.train_dataset = dataset.S2SDataset(
             data_dir=self.data_args['data_dir'],
-            years=self.data_args['train_years'], 
-            n_step=self.data_args['n_step'],
-            lead_time=self.data_args['lead_time'],
-            single_vars=self.data_args['single_vars'],
-            pred_single_vars=self.data_args['pred_single_vars'],
-            pred_pressure_vars=self.data_args['pred_pressure_vars'],
-        )
+                                                        years=self.data_args['train_years'], 
+                                                       n_step=self.data_args['n_step'],
+                                                       lead_time=self.data_args['lead_time'],
+                                                        single_vars=self.data_args['single_vars'],
+                                                        pred_single_vars=self.data_args['pred_single_vars'],
+                                                        pred_pressure_vars=self.data_args['pred_pressure_vars'],
+                                                      )
         self.val_dataset = dataset.S2SDataset(
             data_dir=self.data_args['data_dir'],
-            years=self.data_args['val_years'], 
-            n_step=self.data_args['n_step'],
-            lead_time=self.data_args['lead_time'],
-            single_vars=self.data_args['single_vars'],
-            pred_single_vars=self.data_args['pred_single_vars'],
-            pred_pressure_vars=self.data_args['pred_pressure_vars'],
-        )
+                                                      years=self.data_args['val_years'], 
+                                                     n_step=self.data_args['n_step'],
+                                                     lead_time=self.data_args['lead_time'],
+                                                     single_vars=self.data_args['single_vars'],
+                                                     pred_single_vars=self.data_args['pred_single_vars'],
+                                                     pred_pressure_vars=self.data_args['pred_pressure_vars'],
+                                                    )
         self.test_dataset = dataset.S2SDataset(
             data_dir=self.data_args['data_dir'],
-            years=self.data_args['test_years'], 
-            n_step=self.data_args['n_step'],
-            lead_time=self.data_args['lead_time'],
-            single_vars=self.data_args['single_vars'],
-            pred_single_vars=self.data_args['pred_single_vars'],
-            pred_pressure_vars=self.data_args['pred_pressure_vars'],
-        )
+                                                      years=self.data_args['test_years'], 
+                                                     n_step=self.data_args['n_step'],
+                                                     lead_time=self.data_args['lead_time'],
+                                                     single_vars=self.data_args['single_vars'],
+                                                     pred_single_vars=self.data_args['pred_single_vars'],
+                                                     pred_pressure_vars=self.data_args['pred_pressure_vars'],
+                                                    )
 
     def train_dataloader(self):
         return DataLoader(
             self.train_dataset, 
-            num_workers=self.model_args['num_workers'], 
+                          num_workers=self.model_args['num_workers'], 
             batch_size=self.data_args['batch_size'], 
             shuffle=True, 
             drop_last=True
@@ -166,14 +166,14 @@ class S2SBenchmarkModel(pl.LightningModule):
     def val_dataloader(self):
         return DataLoader(
             self.val_dataset, 
-            num_workers=self.model_args['num_workers'], 
+                          num_workers=self.model_args['num_workers'], 
             batch_size=self.data_args['batch_size']
         )
     
     def test_dataloader(self):
         return DataLoader(
             self.test_dataset, 
-            num_workers=self.model_args['num_workers'], 
+                          num_workers=self.model_args['num_workers'], 
             batch_size=self.data_args['batch_size'], 
             drop_last=True
         )
@@ -183,11 +183,12 @@ class S2SBenchmarkModel(pl.LightningModule):
         timestamp, x, y = batch
         preds = self(x)
         
-        # Align target spatial dims to preds if necessary
-        if preds.dim() == 5:
-            y = y[:, :, :, :preds.shape[3], :preds.shape[4]]
-        elif preds.dim() == 4 and y.dim() == 5:
-            y = y[:, 0]
+            # Align target spatial dims to preds if necessary
+            if preds.dim() == 5:
+                y = y[:, :, :, :preds.shape[3], :preds.shape[4]]
+            elif preds.dim() == 4 and y.dim() == 5:
+                y = y[:, 0]
         
         return preds, y, timestamp
 
+    

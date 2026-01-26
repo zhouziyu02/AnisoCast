@@ -29,13 +29,14 @@ def reverse_normalize(predict, data_args):
     """
     Reverse normalization for predictions and ground truth
     """
+    # Get data directory from data_args
+    data_dir = Path(data_args.get('data_dir', './data/S2S'))
     normalization_file = [
-        Path('/mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/data/S2S') / 'climatology_1.5' / 'climatology_pressure_level_1.5_new.zarr',
-        Path('/mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT/data/S2S') / 'climatology_1.5' / 'climatology_single_level_1.5_new.zarr',
+        data_dir / 'climatology_1.5' / 'climatology_pressure_level_1.5_new.zarr',
+        data_dir / 'climatology_1.5' / 'climatology_single_level_1.5_new.zarr',
     ]
-    # /mnt/bn/gec-scl-ltm-forecast/zhouziyu/CirT_old/data/S2S/climatology_1.5/climatology_pressure_level_1.5_new.zarr
-    pred_single_vars = data_args['pred_single_vars']  # 修正变量名
-    pred_pressure_vars = data_args['pred_pressure_vars']  # 修正变量名
+    pred_single_vars = data_args['pred_single_vars']
+    pred_pressure_vars = data_args['pred_pressure_vars']
 
     mean_pressure_level_pred = torch.tensor(xr.open_dataset(normalization_file[0], engine='zarr')['mean'].sel(
         param=[f"{param}-{level}" for param in pred_pressure_vars for level in config.PRESSURE_LEVELS]).values[:,
@@ -98,9 +99,9 @@ def calculate_metrics(all_pred, all_y, model_args, data_args, save_dir):
         print(f"\nProcessing forecasting step: {step_idx + 1}/{steps}")
         for i, feature_name in enumerate(tqdm(feature_names, desc=f"Step {step_idx + 1}")):
             if '-' in feature_name:
-                source = "pressure_level"  # 修正为ACC类期望的键名
+                source = "pressure_level"
             else:
-                source = "single_level"    # 修正为ACC类期望的键名
+                source = "single_level"
 
             y_hat = pred_step_idx[:, i, :, :]
             y = y_step_idx[:, i, :, :]
@@ -234,81 +235,81 @@ def main(args):
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found at: {checkpoint_path}")
     
-    # 首先从checkpoint的hyper_parameters中读取model_name（最准确，因为这是训练时实际使用的）
+    # First read model_name from checkpoint's hyper_parameters (most accurate, as it's what was actually used during training)
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
     final_model_name = None
     
     if 'hyper_parameters' in checkpoint and 'model_args' in checkpoint['hyper_parameters']:
         final_model_name = checkpoint['hyper_parameters']['model_args'].get('model_name')
         if final_model_name:
-            print(f"📌 从checkpoint的hyper_parameters读取model_name: {final_model_name}")
+            print(f"Reading model_name from checkpoint hyper_parameters: {final_model_name}")
     
-    # 优先从checkpoint目录读取配置（解决并行训练时的参数读取混乱问题）
-    checkpoint_dir = Path(checkpoint_path).parent.parent  # checkpoint在version_X/checkpoints/下
+    # Prioritize reading config from checkpoint directory (solves parameter reading confusion during parallel training)
+    checkpoint_dir = Path(checkpoint_path).parent.parent  # checkpoint is under version_X/checkpoints/
     config_in_checkpoint = checkpoint_dir / 'config.yaml'
     
     if config_in_checkpoint.exists():
-        print(f"📋 从checkpoint目录读取配置: {config_in_checkpoint}")
+        print(f"Reading config from checkpoint directory: {config_in_checkpoint}")
         with open(config_in_checkpoint, 'r') as config_file:
             hyperparams = yaml.load(config_file, Loader=yaml.FullLoader)
     elif args.config_filepath and os.path.exists(args.config_filepath):
-        print(f"⚠️  checkpoint目录中未找到config.yaml，使用提供的配置文件: {args.config_filepath}")
+        print(f"Config.yaml not found in checkpoint directory, using provided config file: {args.config_filepath}")
         with open(args.config_filepath, 'r') as config_file:
             hyperparams = yaml.load(config_file, Loader=yaml.FullLoader)
     else:
-        raise FileNotFoundError(f"无法找到配置文件。请确保checkpoint目录包含config.yaml，或提供--config_filepath")
+        raise FileNotFoundError(f"Config file not found. Please ensure checkpoint directory contains config.yaml, or provide --config_filepath")
     
     model_args = hyperparams['model_args']
     data_args = hyperparams['data_args']
     
-    # 确定最终的model_name：优先使用checkpoint的hyper_parameters中的，否则使用配置文件中的
+    # Determine final model_name: prioritize checkpoint's hyper_parameters, otherwise use config file
     if final_model_name:
         config_model_name = model_args.get('model_name', 'unknown')
         if final_model_name != config_model_name:
-            print(f"✅ 使用checkpoint中保存的model_name: {final_model_name} (覆盖配置文件中的: {config_model_name})")
+            print(f"Using model_name from checkpoint: {final_model_name} (overriding config file: {config_model_name})")
         else:
-            print(f"✅ 使用checkpoint中保存的model_name: {final_model_name} (与配置文件一致)")
+            print(f"Using model_name from checkpoint: {final_model_name} (consistent with config file)")
         model_args['model_name'] = final_model_name
     else:
         final_model_name = model_args.get('model_name', 'soon')
-        print(f"⚠️  checkpoint中未找到model_name，使用配置文件中的: {final_model_name}")
+        print(f"model_name not found in checkpoint, using from config file: {final_model_name}")
         model_args['model_name'] = final_model_name
 
     # Load model and generate predictions
     all_pred, all_y = load_model_and_predict(model_args, data_args, checkpoint_path)
     
-    # 再次确认model_name（load_model_and_predict可能会修改model_args，但我们已经确定了final_model_name）
-    # 确保使用训练时保存的model_name，而不是load_model_and_predict内部可能修改的值
+    # Confirm model_name again (load_model_and_predict may modify model_args, but we've already determined final_model_name)
+    # Ensure using the model_name saved during training, not values that may be modified inside load_model_and_predict
     model_args['model_name'] = final_model_name
     
     # Create save directory
-    # 如果指定了output_dir，使用指定的目录；否则使用默认的./results/{model_name}
+    # If output_dir is specified, use it; otherwise use default ./results/{model_name}
     if args.output_dir and args.output_dir != './results':
-        # 如果output_dir是绝对路径或相对路径，直接使用
+        # If output_dir is absolute or relative path, use directly
         save_dir = Path(args.output_dir)
     else:
-        # 默认保存到 ./results/{model_name}/ 目录
+        # Default save to ./results/{model_name}/ directory
         save_dir = Path(f"./results/{final_model_name}")
     save_dir.mkdir(parents=True, exist_ok=True)
-    print(f"📁 结果将保存到: {save_dir.absolute()}")
+    print(f"Results will be saved to: {save_dir.absolute()}")
     
-    # 验证：确保使用的model_name与checkpoint中的一致
-    print(f"🔍 验证信息:")
-    print(f"   - 最终使用的model_name: {final_model_name}")
-    print(f"   - 保存目录: {save_dir}")
+    # Verify: ensure the model_name used is consistent with checkpoint
+    print(f"Verification info:")
+    print(f"   - Final model_name: {final_model_name}")
+    print(f"   - Save directory: {save_dir}")
     if args.tag:
-        print(f"   - 提供的tag: {args.tag}")
+        print(f"   - Provided tag: {args.tag}")
 
     # Calculate metrics
     print("\nCalculating comprehensive metrics...")
     metrics_df = calculate_metrics(all_pred, all_y, model_args, data_args, save_dir)
 
     # Save results
-    # 使用final_model_name而不是model_args['model_name']，确保文件名正确
-    # 如果提供了tag，在文件名中包含tag
-    # 清理tag中的路径分隔符，避免路径解析错误
+    # Use final_model_name instead of model_args['model_name'] to ensure correct filename
+    # If tag is provided, include it in filename
+    # Clean path separators in tag to avoid path parsing errors
     if args.tag:
-        # 将tag中的路径分隔符替换为下划线，确保文件名安全
+        # Replace path separators in tag with underscores to ensure filename safety
         safe_tag = args.tag.replace('/', '_').replace('\\', '_')
         csv_filename = f"{final_model_name}_metrics_{test_time}_{safe_tag}.csv"
     else:
@@ -316,7 +317,7 @@ def main(args):
     csv_path = save_dir / csv_filename
     metrics_df.to_csv(csv_path, index=False)
     
-    # 使用绝对路径并明确输出
+    # Use absolute path and explicit output
     csv_abs_path = os.path.abspath(csv_path)
     print(f"\n{'='*60}")
     print(f"📄 Results saved to: {csv_abs_path}")

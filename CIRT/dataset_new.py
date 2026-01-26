@@ -156,12 +156,12 @@ class S2SDataset(Dataset):
         # Concatenate along parameter dimension, only if they are specified (i.e., non-empty)
         input_data = [t for t in [torch.tensor(era5_data), torch.tensor(lra5_data), torch.tensor(oras5_data)] if t.nelement() > 0]
         input_data = torch.cat(input_data, dim=1)
-        # 下采样 [1, 63, 121, 240] -> [1, 63, 61, 120]
+        # Downsample [1, 63, 121, 240] -> [1, 63, 61, 120]
         # input_data = downsample_tensor(input_data)
 
         output_data = [t for t in [torch.tensor(era5_data_pred), torch.tensor(lra5_data_pred), torch.tensor(oras5_data_pred)] if t.nelement() > 0]
         output_data = torch.cat(output_data, dim=1)
-        # 下采样 [1, 63, 121, 240] -> [1, 63, 61, 120]
+        # Downsample [1, 63, 121, 240] -> [1, 63, 61, 120]
         # output_data = downsample_tensor(output_data)
 
         timestamp = xr.open_dataset(self.file_paths[0][idx], engine='zarr').time.values.item()

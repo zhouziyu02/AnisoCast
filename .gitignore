@@ -1,4 +1,4 @@
-# 训练输出/数据/资产
+# Training outputs, data, and assets
 data/
 data_download/
 results/
@@ -18,20 +18,44 @@ panguweather_assets/
 pw_20180101/
 pw_smoke/
 fourcastnetv2_assets/
-
 EIMP/
-# 大文件
+
+# Large files
 *.ckpt
+*.pth
 nohup.out
-.npy
+*.npy
+*.zarr
 
 # Python bytecode
 **/__pycache__/
 *.py[co]
+*.pyc
+*.pyo
 
-# run results (large)
-results/
+# System files
+.DS_Store
+**/.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
 
-# ✅ 保留 other 文件夹
-!/other/
-!/other/**
+# Logs
+*.log
+*.out
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# Environment
+.env
+.venv/
+venv/
+env/
+
+# Keep data download scripts
+!data/*.py
+!data/*.sh

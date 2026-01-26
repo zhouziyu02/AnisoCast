@@ -1,9 +1,9 @@
 import os
-# 保持用户/外部传入的 CUDA_VISIBLE_DEVICES，不在此强行覆盖
-# 设置环境变量，避免tqdm进度条重复输出
-os.environ['TQDM_DISABLE'] = '0'  # 保持启用tqdm
+# Keep user/external CUDA_VISIBLE_DEVICES, do not override here
+# Set environment variables to avoid tqdm progress bar duplicate output
+os.environ['TQDM_DISABLE'] = '0'  # Keep tqdm enabled
 import sys
-# 设置stdout为行缓冲模式，避免进度条刷新时的重复输出
+# Set stdout to line buffering mode to avoid duplicate output when progress bar refreshes
 if hasattr(sys.stdout, 'reconfigure'):
     try:
         sys.stdout.reconfigure(line_buffering=True)
@@ -14,7 +14,7 @@ from pathlib import Path
 import yaml
 import time
 from datetime import datetime
-# from lightning.pytorch.loggers import WandbLogger  # 禁用WandB
+# from lightning.pytorch.loggers import WandbLogger  # Disable WandB
 import torch
 import lightning.pytorch as pl
 from lightning.pytorch import loggers as pl_loggers
@@ -54,18 +54,18 @@ def main(args):
     # Initialize training
     log_dir = Path('logs') / model_args['model_name']
     
-    # ModelCheckpoint配置
-    # save_top_k=1: 只保存val_loss最小的1个checkpoint（最佳模型）
-    # save_last=False: 不保存最后一个epoch的checkpoint，只保留最佳模型
+    # ModelCheckpoint configuration
+    # save_top_k=1: Only save 1 checkpoint with minimum val_loss (best model)
+    # save_last=False: Do not save last epoch checkpoint, only keep best model
     checkpoint_callback = ModelCheckpoint(
         monitor='val_loss', 
         mode='min',
         filename='{epoch}-{step}',
         save_top_k=1,
-        save_last=False  # 只保存最佳模型，不保存last.ckpt
+        save_last=False  # Only save best model, do not save last.ckpt
     )
     
-    # 创建一个自定义回调，在checkpoint保存时也保存配置副本
+    # Create a custom callback to save config copy when checkpoint is saved
     class ConfigSaverCallback(pl.Callback):
         def __init__(self, config_path, hyperparams):
             super().__init__()
@@ -74,18 +74,18 @@ def main(args):
             self.saved_to_checkpoint_dir = False
         
         def on_train_start(self, trainer, pl_module):
-            # 在训练开始时，将配置保存到checkpoint目录
+            # Save config to checkpoint directory at training start
             if trainer.global_rank == 0 and not self.saved_to_checkpoint_dir:
-                # Lightning会在训练开始时创建version目录，我们通过logger获取路径
+                # Lightning will create version directory at training start, get path via logger
                 if trainer.logger and hasattr(trainer.logger, 'log_dir'):
                     version_dir = Path(trainer.logger.log_dir)
                     config_copy_path = version_dir / 'config.yaml'
                     with open(config_copy_path, 'w') as f:
                         yaml.dump(self.hyperparams, f, default_flow_style=False, sort_keys=False)
-                    print(f"💾 配置已保存到checkpoint目录: {config_copy_path}")
+                    print(f"Config saved to checkpoint directory: {config_copy_path}")
                     self.saved_to_checkpoint_dir = True
                 else:
-                    # Fallback: 等待Lightning创建version目录
+                    # Fallback: Wait for Lightning to create version directory
                     import time
                     time.sleep(2)
                     version_dirs = sorted(
@@ -97,18 +97,18 @@ def main(args):
                         config_copy_path = latest_version / 'config.yaml'
                         with open(config_copy_path, 'w') as f:
                             yaml.dump(self.hyperparams, f, default_flow_style=False, sort_keys=False)
-                        print(f"💾 配置已保存到checkpoint目录: {config_copy_path}")
+                        print(f"Config saved to checkpoint directory: {config_copy_path}")
                         self.saved_to_checkpoint_dir = True
     
     config_saver = ConfigSaverCallback(args.config_filepath, hyperparams)
     
-    # 在DDP模式下，只在rank 0打印信息，避免重复输出
+    # In DDP mode, only print on rank 0 to avoid duplicate output
     is_rank_zero = True
     if 'RANK' in os.environ:
         rank = int(os.environ.get('RANK', '0'))
         is_rank_zero = (rank == 0)
     
-    # 根据参数决定是否使用TensorBoard
+    # Decide whether to use TensorBoard based on arguments
     tb_logger = None
     if args.use_tensorboard:
         tb_logger = pl_loggers.TensorBoardLogger(
@@ -117,50 +117,50 @@ def main(args):
             default_hp_metric=False,
         )
         if is_rank_zero:
-            print("📊 TensorBoard日志已启用")
+            print("TensorBoard logging enabled")
     else:
         if is_rank_zero:
-            print("🚀 使用最高性能模式（禁用TensorBoard）")
+            print("Using maximum performance mode (TensorBoard disabled)")
     
-    # 创建训练速度监控回调
-    speed_callback = TrainingSpeedCallback(log_every_n_steps=10)  # 每50个step打印一次，减少输出频率
+    # Create training speed monitoring callback
+    speed_callback = TrainingSpeedCallback(log_every_n_steps=10)  # Print every 10 steps to reduce output frequency
     
-    # 组装加速器/设备配置（可通过命令行或环境变量覆盖）
+    # Assemble accelerator/device configuration (can be overridden via command line or environment variables)
     default_accelerator = 'gpu' if torch.cuda.is_available() else 'cpu'
     accelerator = getattr(args, 'accelerator', None) or os.environ.get('ACCELERATOR', default_accelerator)
 
-    # devices 优先级：CLI --devices > 环境 NP > 1（CPU或单卡）
+    # Device priority: CLI --devices > environment NP > 1 (CPU or single GPU)
     cli_devices = getattr(args, 'devices', None)
     env_np = os.environ.get('NP')
     devices = int(cli_devices) if cli_devices is not None else (int(env_np) if env_np else (1 if accelerator != 'gpu' else 1))
 
-    # strategy：多卡DDP，否则auto
+    # Strategy: DDP for multi-GPU, otherwise auto
     strategy = getattr(args, 'strategy', None) or ('ddp_find_unused_parameters_true' if accelerator == 'gpu' and devices and int(devices) > 1 else 'auto')
 
-    # precision：GPU默认16-mixed，CPU固定32
+    # Precision: GPU default 16-mixed, CPU fixed 32
     precision = getattr(args, 'precision', None) or ('16-mixed' if accelerator == 'gpu' else '32-true')
 
-    # 在DDP模式下，只在rank 0显示进度条，避免多进程输出混乱
-    # os已经在文件开头导入，不需要重新导入
+    # In DDP mode, only show progress bar on rank 0 to avoid multi-process output confusion
+    # os is already imported at the top, no need to re-import
     if 'RANK' in os.environ:
         rank = int(os.environ.get('RANK', '0'))
-        enable_progress_bar = (rank == 0)  # 只在rank 0显示进度条
+        enable_progress_bar = (rank == 0)  # Only show progress bar on rank 0
     else:
-        enable_progress_bar = True  # 非DDP模式，显示进度条
+        enable_progress_bar = True  # Non-DDP mode, show progress bar
 
     if is_rank_zero:
         print(f"Trainer config -> accelerator={accelerator}, devices={devices}, strategy={strategy}, precision={precision}")
 
-    # 使用自定义进度条回调，避免重复输出
-    # 在DDP模式下，TQDMProgressBar会自动处理只在rank 0显示
+    # Use custom progress bar callback to avoid duplicate output
+    # In DDP mode, TQDMProgressBar will automatically handle showing only on rank 0
     progress_bar_callback = None
     if enable_progress_bar:
         try:
             from lightning.pytorch.callbacks import TQDMProgressBar
-            # 使用TQDMProgressBar，它会自动处理DDP模式下的输出
+            # Use TQDMProgressBar, it automatically handles output in DDP mode
             progress_bar_callback = TQDMProgressBar(refresh_rate=1)
         except ImportError:
-            # 如果TQDMProgressBar不可用，使用默认进度条
+            # If TQDMProgressBar is not available, use default progress bar
             pass
     
     callbacks_list = [checkpoint_callback, speed_callback, config_saver]
@@ -180,32 +180,32 @@ def main(args):
     )
 
 
-    # 开始训练
+    # Start training
     training_start_time = time.time()
     
-    # 打印当前UTC+8时间（只在rank 0打印，避免重复输出）
+    # Print current time (only on rank 0 to avoid duplicate output)
     if is_rank_zero:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"🕐 当前时间 (UTC+8): {current_time}")
-        print("🚀 开始训练...")
+        print(f"Current time: {current_time}")
+        print("Starting training...")
     
-    # 模型摘要会在训练开始时自动打印（因为enable_model_summary=True）
-    # 不需要手动调用print_summary()，Lightning会自动处理
-    # 在DDP模式下，模型摘要会自动只在rank 0打印
+    # Model summary will be automatically printed at training start (because enable_model_summary=True)
+    # No need to manually call print_summary(), Lightning handles it automatically
+    # In DDP mode, model summary will automatically only print on rank 0
     
     trainer.fit(baseline)
     training_end_time = time.time()
     total_training_time = training_end_time - training_start_time
     
-    # 打印训练结束时间
+    # Print training end time
     end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"✅ 训练完成时间 (UTC+8): {end_time}")
+    print(f"Training completed at: {end_time}")
     print("Total training time: {:.4f}s".format(total_training_time))
     
-    # 注意：不在训练脚本中直接测试，因为：
-    # 1. DDP模式下测试可能导致DataLoader worker意外退出
-    # 2. train_ours.sh 会在训练完成后自动调用 auto_evaluate.py 进行评估
-    # 3. evaluate_ours.py 使用单设备进行评估，更适合测试场景
+    # Note: Do not test directly in training script because:
+    # 1. Testing in DDP mode may cause DataLoader worker to exit unexpectedly
+    # 2. train_ours.sh will automatically call evaluate_soon.py for evaluation after training
+    # 3. evaluate_soon.py uses single device for evaluation, more suitable for testing scenarios
     # trainer.test(baseline, ckpt_path="best")
 
     
@@ -214,7 +214,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--config_filepath', required=True, help='Provide the filepath string to the model config...')
     parser.add_argument('--use_tensorboard', action='store_true', help='Enable TensorBoard logging')
-    # 允许从命令行覆盖设备/加速器/策略/精度
+    # Allow overriding device/accelerator/strategy/precision from command line
     parser.add_argument('--devices', type=int, default=None, help='Number of devices to use (e.g., 1)')
     parser.add_argument('--accelerator', type=str, default=None, help="'gpu' or 'cpu'")
     parser.add_argument('--strategy', type=str, default=None, help="Lightning strategy, e.g., 'ddp' or 'auto'")

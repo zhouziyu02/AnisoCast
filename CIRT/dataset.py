@@ -153,7 +153,7 @@ class S2SDataset(Dataset):
 
 class S2SGraphDataset(Dataset):
     """
-    Graph dataset for EGNN model - 与EIMP实现一致
+    Graph dataset for EGNN model - consistent with EIMP implementation
     """
     
     def __init__(
@@ -270,11 +270,11 @@ class S2SGraphDataset(Dataset):
 
         x, y = input_data[0].float(), torch.stack([torch.mean(output_data[0:14].float(), dim=0), torch.mean(output_data[14:28].float(), dim=0)], dim=0)
         
-        # 转换为图格式
+        # Convert to graph format
         x = x.permute(1, 2, 0).reshape(self.num_nodes, -1)  # (num_nodes, feature)
         y = y.permute(2, 3, 0, 1).reshape(self.num_nodes, y.shape[0], y.shape[1])  # (num_nodes, week, feature)
         
-        # 创建land mask
+        # Create land mask
         land_mask = np.ones((121, 240), dtype=np.float32)
         mask = torch.tensor(land_mask).unsqueeze(-1)
         
@@ -290,7 +290,7 @@ class S2SGraphDataset(Dataset):
         return coord
 
     def _create_edges(self, latitude, longitude, kernel_size):
-        """创建边连接 - 与EIMP实现一致"""
+        """Create edge connections - consistent with EIMP implementation"""
         import math
         print("--------creating edge--------")
         edge = []
