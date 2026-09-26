@@ -1,6 +1,6 @@
-# SOON Model
+# AnisoCast Model
 
-SOON (Symmetric Orthogonal Operator Network) for Sub-seasonal to Seasonal (S2S) Weather Forecasting.
+Symmetric Composition of Anisotropic Operators for Global Subseasonal-to-Seasonal Climate Forecasting
 
 ## Usage
 
