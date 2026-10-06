@@ -23,7 +23,7 @@ python data/parallel_download_pressure_1p5.py
 python data/parallel_download_single_1p5.py
 ```
 
-Data will be saved in `S2S/pressure_level_1.5/` and `S2S/climatology_1.5/` directories.
+The default data root is `./data/S2S`, as defined in `data/config.py`. Downloaded files are saved in `data/S2S/pressure_level_1.5/` and `data/S2S/single_level_1.5/`. Normalization statistics are generated separately in `data/S2S/climatology_1.5/` using `data/calculate_climatology.py`. The `data/` folder contains preprocessing scripts, not the ERA5 dataset itself.
 
 ### Step 2: Train
 

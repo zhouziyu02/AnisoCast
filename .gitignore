@@ -1,5 +1,5 @@
 # Training outputs, data, and assets
-data/
+data/*
 data_download/
 results/
 logs/
