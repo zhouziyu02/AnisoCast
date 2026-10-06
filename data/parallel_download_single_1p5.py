@@ -30,11 +30,9 @@ import xarray as xr
 
 import config
 
-# 可选：压掉 cfgrib 的无关告警
 import warnings
 warnings.filterwarnings("ignore", message="Engine 'cfgrib' loading failed")
 
-# 版本护栏（避免 BytesBytesCodec 报错）
 import zarr, numcodecs
 def _ver_tuple(v):
     try: return tuple(int(p) for p in v.split(".")[:3])
@@ -44,7 +42,6 @@ assert _ver_tuple(zarr.__version__) < (3, 0, 0), \
 assert (0,11,0) <= _ver_tuple(numcodecs.__version__) <= (0,12,99), \
     f"Detected numcodecs {numcodecs.__version__}; please use 0.11–0.12.x (e.g., 0.12.1)"
 
-# 全局只读 Dataset（低内存）
 GLOBAL_DS = None
 
 DEFAULT_URL = (
@@ -62,10 +59,8 @@ def process_one_day(
     dask_scheduler: str,
     inner_dask_threads: int,
 ):
-    # 控制 dask 调度器：默认 synchronous；如需更猛可传 threads
     from dask import config as dask_config
     if dask_scheduler == "threads":
-        # 可选：给 dask 一个内部线程池大小（谨慎，防止过度并发）
         if inner_dask_threads and inner_dask_threads > 0:
             from multiprocessing.pool import ThreadPool
             dask_config.set(scheduler="threads", pool=ThreadPool(inner_dask_threads))
@@ -121,12 +116,10 @@ def parse_args():
                    help="Use anonymous access for public GCS (weatherbench2)")
     p.add_argument("--no-overwrite", action="store_true",
                    help="If set, do not overwrite existing outputs")
-    # dask 内部调度控制
     p.add_argument("--scheduler", choices=["sync", "threads"], default="sync",
                    help="Per-task dask scheduler: sync (safe) or threads (faster, but nested)")
     p.add_argument("--inner-dask-threads", type=int, default=4,
                    help="Threads used by dask 'threads' scheduler INSIDE each task (0=auto)")
-    # 已在早期阶段解析并设置过的底层线程参数，这里仅做显式记录（不再次生效）
     p.add_argument("--omp-threads", type=int, default=8)
     p.add_argument("--mkl-threads", type=int, default=8)
     p.add_argument("--openblas-threads", type=int, default=8)
@@ -147,7 +140,6 @@ def main():
 
     storage_options = {"token": "anon"} if args.anon else None
 
-    # 只打开一次 zarr
     global GLOBAL_DS
     GLOBAL_DS = xr.open_zarr(
         args.url,
