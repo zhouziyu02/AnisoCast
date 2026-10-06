@@ -59,3 +59,6 @@ env/
 # Keep data download scripts
 !data/*.py
 !data/*.sh
+
+# Test caches
+.pytest_cache/

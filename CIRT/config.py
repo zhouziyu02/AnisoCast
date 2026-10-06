@@ -1,10 +1,11 @@
 from pathlib import Path
+import os
 import torch
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 ################## CHANGE THIS TO YOUR OWN ##################
 ABS_PATH = Path(__file__).resolve().parent.parent
-DATA_DIR = './data/S2S'  # Update this path to your data directory
+DATA_DIR = Path(os.environ.get('ANISOCAST_DATA_DIR', ABS_PATH / 'data' / 'S2S')).expanduser()
 #############################################################
 
 PRESSURE_LEVELS = [10, 50,  100,  200,  300,  500,  700,  850,  925, 1000]

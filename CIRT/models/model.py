@@ -7,12 +7,12 @@ import yaml
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
-from CIRT import dataset, config, utils, criterion
+from CIRT import dataset, criterion
 
 class S2SBenchmarkModel(pl.LightningModule):
 
     def __init__(
-        self, 
+        self,
         model_args,
         data_args,
     ):
@@ -20,11 +20,11 @@ class S2SBenchmarkModel(pl.LightningModule):
         self.save_hyperparameters()
         self.model_args = model_args
         self.data_args = data_args
-        
+
         # Initialize model
-        input_size = self.model_args['input_size'] 
-        output_size = self.model_args['output_size'] 
-        
+        input_size = self.model_args['input_size']
+        output_size = self.model_args['output_size']
+
         if 'soon' == self.model_args['model_name']:
             from .soon import Model as SOONModel
             # Read model architecture parameters from model_args, use defaults if not provided
@@ -42,55 +42,46 @@ class S2SBenchmarkModel(pl.LightningModule):
             )
         else:
             raise ValueError(f"Unsupported model_name: {self.model_args['model_name']}. Only 'soon' is supported.")
-        
+
         self.loss = self.init_loss_fn()
         self.val_loss = criterion.RMSE()
-            
+
     def init_loss_fn(self):
         loss = criterion.MSE()
         return loss
-    
+
     def forward(self, x, u=None, v=None, radial=None, edges=None, edge_attr=None, timestamp=None, lead_times=None):
-            return self.model(x)
+        return self.model(x)
 
     def training_step(self, batch, batch_idx):
         timestamp, x, y = batch  # x: [batch, input_size, height, width] y: [batch, step, input_size, height, width]
         preds = self(x)
-        
-                # Align target spatial dims to preds if necessary
-                if preds.dim() == 5:
-                    y = y[:, :, :, :preds.shape[3], :preds.shape[4]]
-                elif preds.dim() == 4 and y.dim() == 5:
-                    y = y[:, 0]
-        
+
+        if preds.shape != y.shape:
+            raise ValueError(f'Prediction/target shape mismatch: {preds.shape} vs {y.shape}')
+
         loss = self.loss(preds, y)
-            self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-            return loss
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, batch_size=x.shape[0], sync_dist=True)
+        return loss
 
     def validation_step(self, batch, batch_idx):
         timestamp, x, y = batch
         preds = self(x)
-        
-                # Align target spatial dims to preds if necessary
-                if preds.dim() == 5:
-                    y = y[:, :, :, :preds.shape[3], :preds.shape[4]]
-                elif preds.dim() == 4 and y.dim() == 5:
-                    y = y[:, 0]
-            
+
+        if preds.shape != y.shape:
+            raise ValueError(f'Prediction/target shape mismatch: {preds.shape} vs {y.shape}')
+
         loss = self.loss(preds, y)
-            self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-            return loss
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=x.shape[0], sync_dist=True)
+        return loss
 
     def test_step(self, batch, batch_idx):
         timestamp, x, y = batch
         preds = self(x)
-        
-            # Align target spatial dims to preds if necessary
-            if preds.dim() == 5:
-                y = y[:, :, :, :preds.shape[3], :preds.shape[4]]
-            elif preds.dim() == 4 and y.dim() == 5:
-                y = y[:, 0]
-        
+
+        if preds.shape != y.shape:
+            raise ValueError(f'Prediction/target shape mismatch: {preds.shape} vs {y.shape}')
+
         loss = self.val_loss(preds, y)
         return loss
 
@@ -117,78 +108,54 @@ class S2SBenchmarkModel(pl.LightningModule):
                 'interval': 'epoch',
             }
         }
-    
-    def on_before_optimizer_step(self, optimizer):
-        """Apply gradient clipping to stabilize training."""
-        max_norm = self.model_args.get('grad_clip_norm', 0.0)
-        if max_norm and max_norm > 0:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=max_norm)
 
     def setup(self, stage=None):
-        # Use standard dataset
-        self.train_dataset = dataset.S2SDataset(
-            data_dir=self.data_args['data_dir'],
-                                                        years=self.data_args['train_years'], 
-                                                       n_step=self.data_args['n_step'],
-                                                       lead_time=self.data_args['lead_time'],
-                                                        single_vars=self.data_args['single_vars'],
-                                                        pred_single_vars=self.data_args['pred_single_vars'],
-                                                        pred_pressure_vars=self.data_args['pred_pressure_vars'],
-                                                      )
-        self.val_dataset = dataset.S2SDataset(
-            data_dir=self.data_args['data_dir'],
-                                                      years=self.data_args['val_years'], 
-                                                     n_step=self.data_args['n_step'],
-                                                     lead_time=self.data_args['lead_time'],
-                                                     single_vars=self.data_args['single_vars'],
-                                                     pred_single_vars=self.data_args['pred_single_vars'],
-                                                     pred_pressure_vars=self.data_args['pred_pressure_vars'],
-                                                    )
-        self.test_dataset = dataset.S2SDataset(
-            data_dir=self.data_args['data_dir'],
-                                                      years=self.data_args['test_years'], 
-                                                     n_step=self.data_args['n_step'],
-                                                     lead_time=self.data_args['lead_time'],
-                                                     single_vars=self.data_args['single_vars'],
-                                                     pred_single_vars=self.data_args['pred_single_vars'],
-                                                     pred_pressure_vars=self.data_args['pred_pressure_vars'],
-                                                    )
+        splits = ('train', 'val', 'test') if stage is None else {
+            'fit': ('train', 'val'), 'validate': ('val',),
+            'test': ('test',), 'predict': ('test',),
+        }.get(stage, ())
+        for split in splits:
+            if hasattr(self, f'{split}_dataset'):
+                continue
+            split_data = dataset.S2SDataset(
+                data_dir=self.data_args['data_dir'], years=self.data_args[f'{split}_years'],
+                n_step=self.data_args['n_step'], lead_time=self.data_args['lead_time'],
+                single_vars=self.data_args['single_vars'],
+                pred_single_vars=self.data_args['pred_single_vars'],
+                pred_pressure_vars=self.data_args['pred_pressure_vars'],
+            )
+            setattr(self, f'{split}_dataset', split_data)
 
     def train_dataloader(self):
         return DataLoader(
-            self.train_dataset, 
-                          num_workers=self.model_args['num_workers'], 
-            batch_size=self.data_args['batch_size'], 
-            shuffle=True, 
+            self.train_dataset,
+                          num_workers=self.model_args['num_workers'],
+            batch_size=self.data_args['batch_size'],
+            shuffle=True,
             drop_last=True
         )
 
     def val_dataloader(self):
         return DataLoader(
-            self.val_dataset, 
-                          num_workers=self.model_args['num_workers'], 
+            self.val_dataset,
+                          num_workers=self.model_args['num_workers'],
             batch_size=self.data_args['batch_size']
         )
-    
+
     def test_dataloader(self):
         return DataLoader(
-            self.test_dataset, 
-                          num_workers=self.model_args['num_workers'], 
-            batch_size=self.data_args['batch_size'], 
-            drop_last=True
+            self.test_dataset,
+                          num_workers=self.model_args['num_workers'],
+            batch_size=self.data_args['batch_size'],
+            drop_last=False
         )
-    
+
     def predict_step(self, batch, batch_idx):
         """Prediction step for evaluation"""
         timestamp, x, y = batch
         preds = self(x)
-        
-            # Align target spatial dims to preds if necessary
-            if preds.dim() == 5:
-                y = y[:, :, :, :preds.shape[3], :preds.shape[4]]
-            elif preds.dim() == 4 and y.dim() == 5:
-                y = y[:, 0]
-        
-        return preds, y, timestamp
 
-    
+        if preds.shape != y.shape:
+            raise ValueError(f'Prediction/target shape mismatch: {preds.shape} vs {y.shape}')
+
+        return preds, y, timestamp

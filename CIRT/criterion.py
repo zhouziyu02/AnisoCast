@@ -1,14 +1,9 @@
 import torch
 import torch.nn as nn
-import torch.special as special
-import torchist
 import xarray as xr
-from xskillscore import crps_ensemble, crps_gaussian
 from pathlib import Path
-import numpy as np
 
-from CIRT import config, utils
-
+from CIRT import config
 
 def get_adjusting_weights():
     latitudes = torch.arange(90, -91.5, -1.5)
@@ -16,6 +11,7 @@ def get_adjusting_weights():
     weights = torch.cos(latitudes_rad)
     
     return weights[None, :, None]
+
 
 
 class RMSE(nn.Module):
@@ -52,8 +48,8 @@ class RMSE(nn.Module):
         rmse = torch.sqrt(mean_squared_error)
         
         return rmse
- 
-    
+
+
 
 class MSE(nn.Module):
     """
@@ -73,8 +69,9 @@ class MSE(nn.Module):
         mean_squared_error = torch.nanmean(squared_diff)
         
         return mean_squared_error
-    
-    
+
+
+
 class Bias(nn.Module):
     """Compute bias (predictions - targets)
     """
@@ -103,69 +100,8 @@ class Bias(nn.Module):
         mean_bias = torch.nanmean(bias)
         
         return mean_bias
-    
 
-class MAE(nn.Module):
-    """Compute mean absolute error
-    """
-    
-    def __init__(self,
-                 lat_adjusted=True):
-        
-        super(MAE, self).__init__()
-        
-        self.lat_adjusted = lat_adjusted
-        self.weights = get_adjusting_weights() if lat_adjusted else None
-        
-    def forward(self, predictions, targets):
-        
-        if self.lat_adjusted:
-            predictions = self.weights.size(1) * (self.weights / torch.sum(self.weights)) * predictions 
-            targets = self.weights.size(1) * (self.weights / torch.sum(self.weights)) * targets 
-        
-        # Calculate difference
-        absolute_diff = torch.abs(predictions - targets)
-        
-        # Calculate the mean absolute difference
-        mean_absolute_error = torch.nanmean(absolute_diff)
-        
-        return mean_absolute_error
-    
 
-class R2(nn.Module):
-    """
-    Compute R^2 = 1 - (RSS/TSS)
-    where, RSS = sum of square residual; TSS = total sum of squares
-    """
-    
-    def __init__(self,
-                 lat_adjusted=True):
-         
-        super(R2, self).__init__()
-        
-        self.lat_adjusted = lat_adjusted
-        self.weights = get_adjusting_weights() if lat_adjusted else None
-        
-    def forward(self, predictions, targets):
-        
-        # Compute only valid values
-        valid_mask = ~torch.isnan(predictions) & ~torch.isnan(targets)
-        predictions, targets = predictions[valid_mask], targets[valid_mask]
-         
-        if self.lat_adjusted:
-            predictions = self.weights.size(1) * (self.weights / torch.sum(self.weights)) * predictions
-            targets = self.weights.size(1) * (self.weights / torch.sum(self.weights)) * targets
-        
-        # Compute RSS and TSS
-        mean_targets = torch.nanmean(targets)
-        rss = torch.nansum((targets - predictions) ** 2)     
-        tss = torch.nansum((targets - mean_targets) ** 2)
-        
-        # Compute r2
-        r2 = 1 - (rss / tss)
-        
-        return r2
-    
 
 class ACC(nn.Module):
     """
@@ -190,59 +126,43 @@ class ACC(nn.Module):
                 'single_level': Path(data_dir) / 'climatology_1.5' / 'climatology_single_level_1.5_new.zarr', 
         }
         
-        self.normalization_mean = {
-                'pressure_level': xr.open_dataset(self.normalization_file['pressure_level'], engine='zarr')['mean'],
-                'single_level': xr.open_dataset(self.normalization_file['single_level'], engine='zarr')['mean'],
-        }
+        self.normalization_mean = {}
+        for source, path in self.normalization_file.items():
+            with xr.open_dataset(path, engine='zarr') as ds:
+                self.normalization_mean[source] = ds['mean'].load()
         
     def forward(self, predictions, targets, param, source):
         
         # Retrieve mean climatology
-        climatology = torch.tensor(self.normalization_mean[source].sel(param=param).values)
-        
-        # Compute only valid values
-        valid_mask = ~torch.isnan(predictions) & ~torch.isnan(targets)
-        predictions, targets = predictions[valid_mask], targets[valid_mask]
+        if predictions.shape != targets.shape:
+            raise ValueError('ACC predictions and targets must have identical shapes.')
+        climatology = torch.as_tensor(self.normalization_mean[source].sel(param=param).values,
+                                      dtype=predictions.dtype, device=predictions.device)
         
         # Compute anomalies
         anomalies_targets = targets - climatology
         anomalies_predictions = predictions - climatology
         
+        valid = torch.isfinite(anomalies_targets) & torch.isfinite(anomalies_predictions)
+        anomalies_targets = torch.where(valid, anomalies_targets, 0)
+        anomalies_predictions = torch.where(valid, anomalies_predictions, 0)
         if self.lat_adjusted:
-            anomalies_targets = self.weights.size(1) * (self.weights / torch.sum(self.weights)) * anomalies_targets
-            anomalies_predictions = self.weights.size(1) * (self.weights / torch.sum(self.weights)) * anomalies_predictions
+            if predictions.shape[-2] != self.weights.shape[1]:
+                raise ValueError('Latitude-adjusted ACC expects a 121-row 1.5-degree grid.')
+            weights = self.weights.to(predictions).clamp_min(0)
+        else:
+            weights = predictions.new_tensor(1.0)
 
         # Compute ACC
-        numerator = torch.nansum(anomalies_targets * anomalies_predictions)
-        denominator = torch.sqrt(torch.nansum(anomalies_targets ** 2) * torch.nansum(anomalies_predictions ** 2))
+        numerator = torch.sum(weights * anomalies_targets * anomalies_predictions)
+        denominator = torch.sqrt(torch.sum(weights * anomalies_targets ** 2) *
+                                 torch.sum(weights * anomalies_predictions ** 2))
 
-        acc = numerator / (denominator + 1e-10)
+        acc = torch.where(denominator > 0, numerator / denominator,
+                          predictions.new_tensor(float('nan')))
         
         return acc
 
-class KL_MSE(nn.Module):
-    """
-    Compute mean squared error (MSE) and KL-divergence, mostly for Variational Autoencoder implementation
-    """
-    
-    def __init__(self):
-        
-        super(KL_MSE, self).__init__()
-
-    def forward(self, predictions, targets):
-        
-        predictions, mu, logvar = predictions
-        
-        # Calculate the squared differences between predictions and targets
-        squared_diff = (predictions - targets) ** 2
-        
-        # Calculate the mean squared error
-        mean_squared_error = torch.nanmean(squared_diff)
-        
-        # Compute KL-divergence
-        kld_loss = -0.5 * torch.nansum(1 + logvar - mu.pow(2) - logvar.exp())
-        
-        return mean_squared_error + kld_loss
 
 
 class MS_SSIM(nn.Module):
@@ -287,7 +207,9 @@ class MS_SSIM(nn.Module):
         for i in range(len(data)):
             min_val = data_reshaped[i].min()
             max_val = data_reshaped[i].max()
-            data_rescaled[i] = self.data_range * (data_reshaped[i] - min_val) / (max_val - min_val)
+            span = max_val - min_val
+            denominator = torch.where(span > 0, span, torch.ones_like(span))
+            data_rescaled[i] = self.data_range * (data_reshaped[i] - min_val) / denominator
         
         return data_rescaled
         
@@ -405,6 +327,7 @@ class MS_SSIM(nn.Module):
         )
 
 
+
 class SpectralDiv(nn.Module):
     """
     Compute Spectral divergence given the top-k percentile wavenumber (higher k means higher frequency)
@@ -427,7 +350,7 @@ class SpectralDiv(nn.Module):
         nx, ny = input_shape
         kx = torch.fft.fftfreq(nx) * nx
         ky = torch.fft.fftfreq(ny) * ny
-        kx, ky = torch.meshgrid(kx, ky)
+        kx, ky = torch.meshgrid(kx, ky, indexing='ij')
         self.k = torch.sqrt(kx**2 + ky**2).reshape(-1)
         self.k_low = 0.5
         self.k_upp = torch.max(self.k)
@@ -441,7 +364,7 @@ class SpectralDiv(nn.Module):
         nx, ny = predictions.shape[-2], predictions.shape[-1]
         kx = (torch.fft.fftfreq(nx, device=device) * nx)
         ky = (torch.fft.fftfreq(ny, device=device) * ny)
-        kx, ky = torch.meshgrid(kx, ky)
+        kx, ky = torch.meshgrid(kx, ky, indexing='ij')
         k = torch.sqrt(kx**2 + ky**2).reshape(-1)
         k_low = self.k_low
         k_upp = torch.max(k)
@@ -467,6 +390,7 @@ class SpectralDiv(nn.Module):
 
         ## If validation, we can target specific quantiles by binning and sorting
         if not self.is_train:
+            import torchist
             x_vec = k.repeat(nc)
             w_pred = predictions_power.reshape(-1)
             w_targ = targets_power.reshape(-1)
@@ -494,7 +418,6 @@ class SpectralDiv(nn.Module):
         # Compute spectral Sk divergence
         div = torch.nansum(targets_Sk * torch.log(torch.clamp(targets_Sk / predictions_Sk, min=1e-9)))
         return div
-    
 
 
 
@@ -520,7 +443,7 @@ class SpectralRes(nn.Module):
         nx, ny = input_shape
         kx = torch.fft.fftfreq(nx) * nx
         ky = torch.fft.fftfreq(ny) * ny
-        kx, ky = torch.meshgrid(kx, ky)
+        kx, ky = torch.meshgrid(kx, ky, indexing='ij')
         
         self.k = torch.sqrt(kx**2 + ky**2).reshape(-1)
         self.k_low = 0.5
@@ -537,7 +460,7 @@ class SpectralRes(nn.Module):
         nx, ny = predictions.shape[-2], predictions.shape[-1]
         kx = (torch.fft.fftfreq(nx, device=device) * nx)
         ky = (torch.fft.fftfreq(ny, device=device) * ny)
-        kx, ky = torch.meshgrid(kx, ky)
+        kx, ky = torch.meshgrid(kx, ky, indexing='ij')
         k = torch.sqrt(kx**2 + ky**2).reshape(-1)
         k_low = self.k_low
         k_upp = torch.max(k)
@@ -563,6 +486,7 @@ class SpectralRes(nn.Module):
 
         ## If validation, we can target specific quantiles by binning and sorting
         if not self.is_train:
+            import torchist
             x_vec = k.repeat(nc)
             w_pred = predictions_power.reshape(-1)
             w_targ = targets_power.reshape(-1)
@@ -590,155 +514,3 @@ class SpectralRes(nn.Module):
         # Compute spectral Sk residual
         res = torch.sqrt(torch.nanmean(torch.square(predictions_Sk - targets_Sk)))
         return res
- 
-    
-
-class CRPS(nn.Module):
-    """Compute Continuous Ranked Probability Score (CRPS)
-    """
-    
-    def __init__(self,
-                 lat_adjusted=True):
-        
-        super(CRPS, self).__init__()
-        
-        self.lat_adjusted = lat_adjusted
-        self.weights = get_adjusting_weights() if lat_adjusted else None
-        
-    def forward(self, predictions, targets):
-        crps = []
-        opts = dict(device=predictions.device, dtype=predictions.dtype)
-        
-        if self.lat_adjusted:
-            predictions = self.weights.size(1) * (self.weights / torch.sum(self.weights)) * predictions 
-            targets = self.weights.size(1) * (self.weights / torch.sum(self.weights)) * targets
-            
-        B, N, H, W = predictions.shape
-        coords_pred = {"member": range(N), "lat": range(H), "lon": range(W)}
-        coords_targ = {"lat": range(H), "lon": range(W)}
-        
-        # predictions = predictions.reshape((N, B, H, W))
-        
-        # predictions = predictions.sort(dim=0).values
-        # diff = predictions[1:] - predictions[:-1]
-        # weight = torch.arange(1, N, **opts) * torch.arange(N - 1, 0, -1, **opts)
-        # weight = weight.reshape(weight.shape + (1,) * (diff.dim() - 1))
-        
-        # crps = torch.nanmean(torch.abs(predictions - targets), dim=0) - torch.nansum(diff * weight, dim=0) / N**2
-        # crps = torch.nanmean(crps)
-        
-        for b in range(B):
-            
-            pred_xr = xr.DataArray(predictions[b].detach().cpu().numpy(), dims=["member", "lat", "lon"],  coords=coords_pred)
-            targ_xr = xr.DataArray(targets[b].detach().cpu().numpy(), dims=["lat", "lon"], coords=coords_targ)
-            
-            # Compute CRPS for the current batch
-            crps.append(crps_ensemble(targ_xr, pred_xr).mean().item())
-            
-        crps = torch.nanmean(torch.tensor(crps, **opts))
-
-        return crps
-    
-class CRPSS(nn.Module):
-    """Compute Continuous Ranked Probability Score (CRPS) Score
-    """
-    
-    def __init__(self,
-                 lat_adjusted=True):
-        
-        super(CRPSS, self).__init__()
-        
-        self.lat_adjusted = lat_adjusted
-        self.weights = get_adjusting_weights() if lat_adjusted else None
-        self.crps = CRPS(lat_adjusted=False) # latitude adjustment done only once...
-        self.mae = MAE(lat_adjusted=False) # latitude adjustment done only once...
-        self.normalization_file = {
-                'era5': Path(config.DATA_DIR) / 'climatology' / 'climatology_era5_spatial.zarr',
-                'lra5': Path(config.DATA_DIR) / 'climatology' / 'climatology_lra5_spatial.zarr',
-                'oras5': Path(config.DATA_DIR) / 'climatology' / 'climatology_oras5_spatial.zarr'
-        }
-        self.normalization = {
-                'era5': xr.open_dataset(self.normalization_file['era5'], engine='zarr'),
-                'lra5': xr.open_dataset(self.normalization_file['lra5'], engine='zarr'),
-                'oras5': xr.open_dataset(self.normalization_file['oras5'], engine='zarr'),
-        }
-
-    def forward(self, predictions, targets, doys, param, source):
-        
-        opts = dict(device=predictions.device, dtype=predictions.dtype)
-        
-        # Get climatology
-        clima_mean = self.normalization[source]['mean'].sel(doy=doys, param=param).values
-        clima_sigma = self.normalization[source]['sigma'].sel(doy=doys, param=param).values
- 
-        if self.lat_adjusted:
-            predictions = self.weights.size(1) * (self.weights / torch.sum(self.weights)) * predictions 
-            targets = self.weights.size(1) * (self.weights / torch.sum(self.weights)) * targets
-            clima_mean = self.weights.size(1) * (self.weights / torch.sum(self.weights)) * clima_mean
-            clima_sigma = self.weights.size(1) * (self.weights / torch.sum(self.weights)) * clima_sigma
-        
-        B, N, H, W = predictions.shape
-        coords_pred = {"member": range(N), "lat": range(H), "lon": range(W)}
-        coords_targ = {"lat": range(H), "lon": range(W)}
-
-        # Compute reference CRPS
-        crps_ref = []
-        for b in range(B):
-            targ_xr = xr.DataArray(targets[b].detach().cpu().numpy(), dims=["lat", "lon"], coords=coords_targ)
-            clima_m_xr = xr.DataArray(clima_mean[b].detach().cpu().numpy(), dims=["lat", "lon"], coords=coords_targ)
-            clima_s_xr = xr.DataArray(clima_sigma[b].detach().cpu().numpy(), dims=["lat", "lon"], coords=coords_targ)
-            crps_ref.append(crps_gaussian(targ_xr, clima_m_xr, clima_s_xr).mean().item())
-
-        crps_ref = torch.nanmean(torch.tensor(crps_ref, **opts))
-        
-        # Compute forecast CRPS
-        crps_for = self.crps(predictions, targets)
-        
-        # Compute CRPS Score
-        crpss = 1 - crps_for / crps_ref
-
-        return crpss
-
-
-class Spread(nn.Module):
-    """Compute Spread along the ensemble dimension
-    """
-    
-    def __init__(self,
-                 lat_adjusted=True):
-        
-        super(Spread, self).__init__()
-        
-        self.lat_adjusted = lat_adjusted
-        self.weights = get_adjusting_weights() if lat_adjusted else None
-        
-    def forward(self, predictions, targets):
-        
-        if self.lat_adjusted:
-            predictions = self.weights.size(1) * (self.weights / torch.sum(self.weights)) * predictions 
-            
-        spread = torch.nanmean(torch.std(predictions, dim=1))
-    
-        return spread
-    
-
-class SSR(nn.Module):
-    """Compute spread/skill ratio
-    """
-    
-    def __init__(self,
-                 lat_adjusted=True):
-        
-        super(SSR, self).__init__()
-        
-        self.lat_adjusted = lat_adjusted
-        self.weights = get_adjusting_weights() if lat_adjusted else None
-        
-    def forward(self, predictions, targets):
-        
-        skill = RMSE(lat_adjusted=self.lat_adjusted)
-        spread = Spread(lat_adjusted=self.lat_adjusted)
-        
-        ssr = spread(predictions, targets) / skill(predictions.mean(axis=1), targets)
-    
-        return ssr

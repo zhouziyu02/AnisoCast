@@ -12,7 +12,7 @@ import contextlib
 class RMSNorm(nn.Module):
     """
     Root Mean Square Normalization.
-    Preferred in Operator Learning for preserving phase information and stability.
+    Normalize over latent channels using their root mean square magnitude.
     """
     def __init__(self, dim, eps=1e-6):
         super().__init__()
@@ -31,8 +31,8 @@ class AxisSpectralOperator(nn.Module):
     [Operator A] Axis-wise Spectral Operator.
     Handles global periodic dependencies along the Feature Axis (C).
 
-    In the context of our embedding (where Width is compressed into Channels),
-    this implicitly models the periodic wave propagation (e.g., Zonal Waves).
+    Width is compressed into learned channels. Their Fourier frequencies are
+    latent feature frequencies, rather than physical longitude wavenumbers.
     """
     def __init__(self, dim):
         super().__init__()
@@ -125,9 +125,9 @@ class SymmetricOperatorBlock(nn.Module):
     """
     [The Core Architecture] Symmetric Operator Splitting Block.
 
-    Theory: Implements 'Strang Splitting' for non-commutative operators A and B.
-    Approximation: u(t+1) approx e^{A/2} e^{B} e^{A/2} u(t)
-    Result: O(dt^3) local error, superior to O(dt^2) of standard sequential blocks.
+    Weight-shared spectral-spatial-spectral composition inspired by symmetric
+    splitting. No time-step-scaled exponential flows or formal error order
+    are asserted for these learned modules.
     """
     def __init__(
         self,
@@ -168,15 +168,15 @@ class SymmetricOperatorBlock(nn.Module):
         shortcut = x
         x_norm = self.norm1(x)
 
-        # --- Strang Splitting Sequence (A/2 -> B -> A/2) ---
+        # --- Shared spectral -> spatial -> spectral composition ---
 
-        # 1. Half-Step Spectral Propagation
+        # 1. Spectral operation
         x_step1 = self.op_spectral(x_norm)
 
-        # 2. Full-Step Spatial Transport
+        # 2. Spatial operation
         x_step2 = self.op_spatial(x_step1)
 
-        # 3. Half-Step Spectral Propagation
+        # 3. Shared spectral operation
         x_step3 = self.op_spectral(x_step2)
 
         # Residual Connection with LayerScale
@@ -212,12 +212,12 @@ class PatchEmbed(nn.Module):
 
 
 # ==========================================
-# 3. Main Model: SOOT (Symmetric Orthogonal Operator Transformer)
+# 3. Main Model: SOON (Symmetric Orthogonal Operator Network)
 # ==========================================
 
 class Model(nn.Module):
     """
-    SOOT: Symmetric Orthogonal Operator Transformer.
+    SOON: Symmetric Orthogonal Operator Network.
 
     A general-purpose spatiotemporal backbone designed for systems with
     anisotropic dynamics (e.g. Fluids, Weather, Plasma).
@@ -230,7 +230,7 @@ class Model(nn.Module):
         embed_dim=768,
         depth=8,
         decoder_depth=2,
-        num_heads=16,            # kept for API compatibility, unused in SOOT
+        num_heads=16,            # kept for API compatibility, unused in SOON
         mlp_ratio=4.0,
         drop_path=0.1,
         drop_rate=0.1

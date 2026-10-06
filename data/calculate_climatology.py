@@ -9,10 +9,11 @@ Features
 - Parallel Zarr open (thread-pool): --open_concurrency (preserves file order)
 - Two aggregation modes:
     * --agg concat   : concat along time -> mean/std over (time,lat,lon)
-    * --agg pairwise : (default) per-day spatial reduce to sum/sum2/count,
-                       then sum across days -> mean/std (ddof=0), same result as above,
+    * --agg pairwise : (default) per-shard count/mean/centered-M2 over time and space,
+                       then stable moment merging -> mean/std (ddof=0), same result as above,
                        but with much smaller task graphs and better throughput
-- Raw Zarr fast path (skip xarray metadata): --force_raw_zarr
+- Raw Zarr fast path with explicit dimension metadata and CF decoding: --force_raw_zarr
+- Training period defaults to 1979-01-01 through 2016-12-31; every requested day is required
 - Progress bars: --progress none | vars | vars+files
 - Dimension name adaptation: lat<->latitude, lon<->longitude
 - Force overwrite outputs (never skip if exists)
@@ -34,6 +35,10 @@ import logging
 import warnings
 import shutil
 import os
+import re
+
+import numpy as np
+import pandas as pd
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -45,10 +50,11 @@ from tqdm.auto import tqdm
 import zarr
 import dask.array as da
 
+from download_utils import parse_date, validate_range
+
 import config  # must define: DATA_DIR, ERA5_SINGLE_LEVEL, ERA5_PRESSURE_LEVEL, PRESSURE_LEVELS (for PL reorder)
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
-warnings.filterwarnings("ignore")
 
 
 # ----------------- helpers -----------------
@@ -119,204 +125,143 @@ def dims_to_reduce(da_x: xr.DataArray):
 
 # ---------- Fallback: build DataArray from raw Zarr ---------
 
-def _infer_dims_from_shape(shape, lengths):
-    """
-    Prefer ('time','level','latitude','longitude'); if no level then ('time','latitude','longitude').
-    """
-    def L(n):
-        return lengths.get(n)
+def open_var_via_zarr(path: Path, var: str) -> xr.DataArray:
+    """Read explicit dimension metadata and decode CF scaling, fill values and time."""
+    group = zarr.open_group(str(path), mode="r")
+    if var not in group:
+        raise KeyError(f"{path}: required variable {var!r} is missing")
 
-    candidates = []
-    if "level" in lengths:
-        candidates += [
-            ("time", "level", "latitude", "longitude"),
-            ("time", "latitude", "longitude", "level"),
-            ("level", "time", "latitude", "longitude"),
-        ]
-    candidates += [("time", "latitude", "longitude")]
+    def read_array(name, lazy=False):
+        array = group[name]
+        attrs = dict(array.attrs)
+        dims = attrs.pop("_ARRAY_DIMENSIONS", None)
+        if dims is None or len(dims) != array.ndim:
+            raise ValueError(f"{path}/{name}: missing or invalid _ARRAY_DIMENSIONS")
+        if array.fill_value is not None:
+            attrs.setdefault("_FillValue", array.fill_value)
+        values = da.from_zarr(array) if lazy else np.asarray(array[()] if array.ndim == 0 else array[:])
+        return xr.DataArray(values, dims=dims, attrs=attrs, name=name)
 
-    for cand in candidates:
-        dims = tuple({"lat": "latitude", "lon": "longitude"}.get(d, d) for d in cand)
-        lens = tuple(L(d) for d in dims)
-        if all(l is not None for l in lens) and tuple(lens) == tuple(shape):
-            return dims
-    return None
-
-
-def open_var_via_zarr(path: Path, var: str) -> xr.DataArray | None:
-    g = zarr.open_group(str(path), mode="r")
-    if var not in g:  # shard lacks this variable
-        return None
-    arr = g[var]  # zarr.Array
-    # coordinates
+    array = read_array(var, lazy=True)
     coords = {}
-    lengths = {}
-    for cname in ("time", "level", "latitude", "longitude"):
-        if cname in g:
-            c_arr = g[cname]
-            coords[cname] = c_arr[:]  # small arrays -> RAM
-            lengths[cname] = c_arr.shape[0]
-    dims = _infer_dims_from_shape(arr.shape, lengths)
-    if dims is None:
-        raise ValueError(f"Cannot infer dims for {var} in {path.name}: shape={arr.shape}, lens={lengths}")
-    darr = da.from_zarr(arr)  # lazy
-    da_x = xr.DataArray(darr, dims=dims, coords={d: coords[d] for d in dims if d in coords}, name=var)
-    # dtype safety
-    if da_x.dtype.kind in ("i", "u"):
-        da_x = da_x.astype("float32")
-    elif str(da_x.dtype) == "float64":
-        da_x = da_x.astype("float32")
-    return da_x
+    for name in ("time", "level", "latitude", "longitude", "lat", "lon"):
+        if name in group:
+            coordinate = read_array(name)
+            if set(coordinate.dims).issubset(array.dims):
+                coords[name] = coordinate
+    return xr.decode_cf(xr.Dataset({var: array}, coords=coords))[var]
 
 
-# ---------- parallel open (preserve file order) ----------
-
-def _open_one(fp: Path, var: str, chunk_dict, consolidated, force_raw_zarr):
-    da_x = None
-    if not force_raw_zarr:
-        try:
-            ds = open_zarr_flexible(fp, consolidated=consolidated)
-            if var in ds:
-                da_x = ds[var]
-        except Exception:
-            da_x = None
-    if da_x is None:
-        try:
-            da_x = open_var_via_zarr(fp, var)
-        except Exception:
+def _open_one(fp, var, chunk_dict, consolidated, force_raw_zarr, start, end):
+    try:
+        if force_raw_zarr:
+            array = open_var_via_zarr(fp, var)
+        else:
+            dataset = open_zarr_flexible(fp, consolidated)
+            if var not in dataset:
+                raise KeyError(f"Required variable {var!r} is missing")
+            array = dataset[var]
+        if "time" not in array.coords:
+            raise ValueError("A time coordinate is required")
+        if "time" not in array.dims:
+            array = array.expand_dims("time")
+        if not np.issubdtype(array.time.dtype, np.datetime64):
+            raise ValueError("Time must decode to calendar dates")
+        array = array.sel(time=slice(str(pd.Timestamp(start).date()), str(pd.Timestamp(end).date())))
+        if array.sizes["time"] == 0:
             return None
-
-    if da_x is None:
-        return None  # shard missing this variable
-
-    # chunks
-    this_chunk = adapt_chunks_to_da(chunk_dict, da_x)
-    if this_chunk:
-        da_x = da_x.chunk(this_chunk)
-    # dtype normalize
-    if da_x.dtype.kind in ("i", "u"):
-        da_x = da_x.astype("float32")
-    elif str(da_x.dtype) == "float64":
-        da_x = da_x.astype("float32")
-    return da_x
+        chunks = adapt_chunks_to_da(chunk_dict, array)
+        return (array.chunk(chunks) if chunks else array).astype("float64")
+    except Exception as exc:
+        raise ValueError(f"Cannot read {var!r} from {fp}: {exc}") from exc
 
 
 def parallel_open_list(files, var, chunk_dict, consolidated, force_raw_zarr,
-                       show_file_tqdm=False, open_concurrency=1):
-    """
-    Open many shards in parallel and return DataArrays in the SAME ORDER as `files`.
-    Missing-variable shards are skipped (logged).
-    """
-    das_ordered = [None] * len(files)
-    missing = 0
-
-    if open_concurrency > 1 and len(files) > 1:
-        with ThreadPoolExecutor(max_workers=open_concurrency) as ex:
-            fut_to_idx = {ex.submit(_open_one, fp, var, chunk_dict, consolidated, force_raw_zarr): i
-                          for i, fp in enumerate(files)}
-            iterator = as_completed(fut_to_idx)
-            if show_file_tqdm:
-                iterator = tqdm(iterator, total=len(fut_to_idx), desc=f"{var}: open files",
-                                leave=False, dynamic_ncols=True, mininterval=0.5)
-            for fut in iterator:
-                i = fut_to_idx[fut]
-                try:
-                    da_x = fut.result()
-                except Exception:
-                    da_x = None
-                if da_x is None:
-                    missing += 1
-                else:
-                    das_ordered[i] = da_x
-    else:
-        it = enumerate(files)
+                       show_file_tqdm=False, open_concurrency=1,
+                       start="1979-01-01", end="2016-12-31"):
+    """Open shards in order, enforcing complete dates and consistent coordinates."""
+    def read(path):
+        return _open_one(path, var, chunk_dict, consolidated, force_raw_zarr, start, end)
+    with ThreadPoolExecutor(max_workers=open_concurrency) as executor:
+        iterator = executor.map(read, files)
         if show_file_tqdm:
-            it = enumerate(tqdm(files, desc=f"{var}: scan files", leave=False, dynamic_ncols=True))
-        for i, fp in it:
-            try:
-                da_x = _open_one(fp, var, chunk_dict, consolidated, force_raw_zarr)
-            except Exception:
-                da_x = None
-            if da_x is None:
-                missing += 1
-            else:
-                das_ordered[i] = da_x
-
-    # compact while preserving order
-    das = [da for da in das_ordered if da is not None]
-    if missing:
-        logging.info(f"{var}: {missing} shard(s) missing this variable; skipped.")
-    return das
+            iterator = tqdm(iterator, total=len(files), desc=f"{var}: open", leave=False)
+        arrays = [array for array in iterator if array is not None]
+    if not arrays:
+        raise ValueError(f"No {var} samples in the requested period")
+    reference = arrays[0]
+    for array in arrays[1:]:
+        if set(array.dims) != set(reference.dims):
+            raise ValueError(f"{var}: inconsistent dimensions between shards")
+        for dim in reference.dims:
+            if dim != "time" and not reference[dim].equals(array[dim]):
+                raise ValueError(f"{var}: inconsistent {dim} coordinates between shards")
+    times = pd.DatetimeIndex(np.concatenate([array.time.values for array in arrays]))
+    if times.has_duplicates:
+        raise ValueError(f"{var}: duplicate timestamps across input shards")
+    missing = pd.date_range(start, end, freq="D").difference(times.normalize().unique())
+    if len(missing):
+        examples = ", ".join(day.strftime("%Y-%m-%d") for day in missing[:5])
+        raise ValueError(f"{var}: {len(missing)} requested day(s) are missing (e.g. {examples})")
+    return arrays
 
 
 # ---------- aggregation modes ----------
 
 def concat_mode(dataset_files, var, chunk_dict, consolidated,
-                show_file_tqdm, force_raw_zarr, files_limit, open_concurrency):
+                show_file_tqdm, force_raw_zarr, files_limit, open_concurrency, start, end):
     files = dataset_files[:files_limit] if files_limit else dataset_files
     da_list = parallel_open_list(files, var, chunk_dict, consolidated, force_raw_zarr,
-                                 show_file_tqdm=show_file_tqdm, open_concurrency=open_concurrency)
+                                 show_file_tqdm=show_file_tqdm, open_concurrency=open_concurrency, start=start, end=end)
     if not da_list:
         return None, None
-    da_all = xr.concat(da_list, dim="time")  # lazy concat along time (chronological)
+    da_all = xr.concat(da_list, dim="time", join="exact")  # lazy concat along time (chronological)
     reduce_dims = dims_to_reduce(da_all)
     if not reduce_dims:
         return None, None
     da_mean = da_all.mean(dim=reduce_dims, skipna=True)
     da_std = da_all.std(dim=reduce_dims, skipna=True)
     with ProgressBar():
-        mean_v = da_mean.compute()
-        std_v = da_std.compute()
+        mean_v, std_v = dask.compute(da_mean, da_std)
     return mean_v, std_v
 
 
-def reduce_spatial_sums(da_x: xr.DataArray):
-    # sum over spatial dims; keep time(len=1) & level(if any)
-    space_dims = [d for d in ("lat", "latitude", "lon", "longitude") if d in da_x.dims]
-    s = da_x.sum(dim=space_dims, skipna=True)
-    s2 = (da_x * da_x).sum(dim=space_dims, skipna=True)
-    cnt = da_x.notnull().sum(dim=space_dims)
-    # drop size-1 time
-    if "time" in s.dims and s.sizes["time"] == 1:
-        s = s.isel(time=0, drop=True)
-        s2 = s2.isel(time=0, drop=True)
-        cnt = cnt.isel(time=0, drop=True)
-    return s, s2, cnt
+def reduce_moments(array):
+    """Reduce all time and spatial samples with stable float64 centered moments."""
+    array = array.astype("float64")
+    reduce = dims_to_reduce(array)
+    count = array.count(reduce)
+    mean = array.mean(reduce, skipna=True).where(count > 0, 0)
+    m2 = ((array - mean) ** 2).sum(reduce, skipna=True)
+    return count, mean, m2
 
 
 def pairwise_mode(dataset_files, var, chunk_dict, consolidated,
-                  show_file_tqdm, force_raw_zarr, files_limit, open_concurrency):
+                  show_file_tqdm, force_raw_zarr, files_limit, open_concurrency, start, end):
     files = dataset_files[:files_limit] if files_limit else dataset_files
-    da_list = parallel_open_list(files, var, chunk_dict, consolidated, force_raw_zarr,
-                                 show_file_tqdm=show_file_tqdm, open_concurrency=open_concurrency)
-    if not da_list:
-        return None, None
-
-    S_list, S2_list, N_list = [], [], []
-    for da_x in da_list:
-        s, s2, n = reduce_spatial_sums(da_x)
-        S_list.append(s)
-        S2_list.append(s2)
-        N_list.append(n)
-
-    def stack_sum(arrs):
-        if len(arrs) == 1:
-            return arrs[0]
-        return xr.concat(arrs, dim="files").sum("files")
-
-    S = stack_sum(S_list)
-    S2 = stack_sum(S2_list)
-    N = stack_sum(N_list)
-
-    mean = S / N
-    var = (S2 / N) - (mean * mean)
-    # numerical safety
-    std = xr.apply_ufunc(lambda a: (a.clip(min=0)) ** 0.5, var)
-
+    arrays = parallel_open_list(files, var, chunk_dict, consolidated, force_raw_zarr,
+                                show_file_tqdm, open_concurrency, start, end)
+    moments = [reduce_moments(array) for array in arrays]
+    # Chan's variance formula in a balanced tree keeps graph depth logarithmic.
+    while len(moments) > 1:
+        merged = []
+        for index in range(0, len(moments), 2):
+            if index + 1 == len(moments):
+                merged.append(moments[index])
+                continue
+            n1, mean1, m21 = moments[index]
+            n2, mean2, m22 = moments[index + 1]
+            count = n1 + n2
+            denominator = count.where(count > 0, 1)
+            delta = mean2 - mean1
+            merged.append((count, mean1 + delta * n2 / denominator,
+                           m21 + m22 + delta ** 2 * n1 * n2 / denominator))
+        moments = merged
+    count, mean, m2 = moments[0]
+    mean = mean.where(count > 0)
+    sigma = (m2 / count.where(count > 0)).clip(min=0) ** 0.5
     with ProgressBar():
-        mean_v = mean.compute()
-        std_v = std.compute()
-    return mean_v, std_v
+        return dask.compute(mean, sigma)
 
 
 def maybe_reorder_levels_by_config(arr: xr.DataArray, order: list | None):
@@ -339,12 +284,18 @@ def compute_climatology(dataset_files, params, is_pressure_level,
                         force_raw_zarr=False,
                         files_limit=None,
                         agg_mode="pairwise",
-                        open_concurrency=1) -> xr.Dataset:
+                        open_concurrency=1,
+                        start="1979-01-01", end="2016-12-31") -> xr.Dataset:
     dask.config.set({
         "array.slicing.split_large_chunks": True,
         "optimization.fuse.active": True,
     })
 
+    start, end = pd.Timestamp(start), pd.Timestamp(end)
+    validate_range(start, end)
+    dataset_files = [path for path in dataset_files
+                     if not (match := re.search(r"(\d{8})\.zarr$", Path(path).name))
+                     or start <= pd.Timestamp(match.group(1)) <= end]
     if len(dataset_files) == 0:
         raise FileNotFoundError("No .zarr files found for the dataset.")
 
@@ -362,7 +313,7 @@ def compute_climatology(dataset_files, params, is_pressure_level,
                 show_file_tqdm=(progress_mode == "vars+files"),
                 force_raw_zarr=force_raw_zarr,
                 files_limit=files_limit,
-                open_concurrency=open_concurrency,
+                open_concurrency=open_concurrency, start=start, end=end,
             )
         else:  # pairwise
             mean_v, std_v = pairwise_mode(
@@ -370,12 +321,11 @@ def compute_climatology(dataset_files, params, is_pressure_level,
                 show_file_tqdm=(progress_mode == "vars+files"),
                 force_raw_zarr=force_raw_zarr,
                 files_limit=files_limit,
-                open_concurrency=open_concurrency,
+                open_concurrency=open_concurrency, start=start, end=end,
             )
 
-        if mean_v is None:
-            logging.error(f"Variable {var}: cannot compute statistics; skip.")
-            continue
+        if mean_v is None or not bool(np.isfinite(mean_v).all()) or not bool(np.isfinite(std_v).all()):
+            raise ValueError(f"Variable {var}: empty or invalid statistics")
 
         if is_pressure_level and ("level" in mean_v.dims) and (mean_v.ndim == 1):
             if order_levels_by_config:
@@ -401,7 +351,10 @@ def compute_climatology(dataset_files, params, is_pressure_level,
     ds_out = xr.Dataset(
         data_vars={"mean": ("param", mean_list), "sigma": ("param", std_list)},
         coords={"param": ("param", name_list)},
-        attrs={"note": f"mean/sigma over (time, lat, lon); agg={agg_mode}; raw_zarr={force_raw_zarr}"},
+        attrs={"note": f"mean/sigma over (time, lat, lon); agg={agg_mode}; raw_zarr={force_raw_zarr}",
+               "period_start": str(start.date()), "period_end": str(end.date()), "ddof": 0,
+               "spatial_weighting": "unweighted grid points", "accumulation_dtype": "float64",
+               "missing_values": "skip NaN; downloader replaces NaN with zero"},
     )
     return ds_out
 
@@ -456,7 +409,7 @@ def main(args):
         force_raw_zarr=args.force_raw_zarr,
         files_limit=args.files_limit if args.files_limit and args.files_limit > 0 else None,
         agg_mode=args.agg,
-        open_concurrency=max(1, args.open_concurrency),
+        open_concurrency=max(1, args.open_concurrency), start=args.start, end=args.end,
     )
 
     # ---- save (force overwrite) ----
@@ -486,7 +439,7 @@ if __name__ == "__main__":
     p.add_argument("--open_concurrency", type=int, default=1,
                    help="Thread-pool concurrency for opening Zarr files (I/O parallelism).")
     p.add_argument("--files_limit", type=int, default=0,
-                   help="Limit number of daily .zarr to scan (for quick sanity check). 0=all.")
+                   help="Limit input shards; narrow --start/--end accordingly. 0=all.")
     # aggregation & ordering
     p.add_argument("--agg", default="pairwise", choices=["pairwise", "concat"],
                    help="Aggregation mode: 'pairwise' (faster) or 'concat' (direct mean/std over concatenated time).")
@@ -501,7 +454,10 @@ if __name__ == "__main__":
     p.add_argument("--n_workers", type=int, default=0, help="Number of Dask workers (0=auto).")
     p.add_argument("--threads_per_worker", type=int, default=1, help="Threads per worker.")
     p.add_argument("--memory_limit", default="auto", help='Per-worker memory limit, e.g., "6GB" or "auto".')
+    p.add_argument("--start", type=parse_date, default=parse_date("1979-01-01"), help="First training date")
+    p.add_argument("--end", type=parse_date, default=parse_date("2016-12-31"), help="Last training date (inclusive)")
     args = p.parse_args()
+    validate_range(args.start, args.end)
     main(args)
 
 

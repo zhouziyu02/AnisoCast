@@ -1,327 +1,146 @@
+from datetime import datetime
+from pathlib import Path
+import re
+from typing import List
+
+import numpy as np
 import torch
 from torch.utils.data import Dataset
-from typing import List
-from pathlib import Path
-import glob
 import xarray as xr
-import numpy as np
-from datetime import datetime
-import re
-from tqdm import tqdm
+
 from CIRT import config
-from torch_geometric.data import Data
+
 
 class S2SDataset(Dataset):
+    """One daily input and two averages over 28 future target days.
+
+    n_step is a target window length, not input history. With lead_time=15,
+    outputs average days +15..+28 and +29..+42 relative to the input date.
     """
-    Dataset object to handle input reanalysis.
-    
-    Params:
-        years <List[int]>      : list of years to load and process,
-        n_step <int>           : number of contiguous timesteps included in the data (default: 1)
-        lead_time <int>        : delta_t ahead in time, useful for direct prediction (default: 1)
-        single_vars <List[str]>  : list of land variables to include (default: empty)`
-        ocean_vars <List[str]> : list of sea/ice variables to include (default: empty)`
-        is_normalized <bool>   : flag to indicate whether we should perform normalization or not (default: True)
-    """
-    
-    def __init__(
-        self, 
-        data_dir: str,
-        years: List[int],
-        n_step: int = 1,
-        lead_time: int = 1,
-        kernel_size: int = 4,
-        single_vars: List[str] = [],
-        pred_single_vars: List[str] = [],
-        pred_pressure_vars: List[str] = [],
-        is_normalized: bool = True,
-    ) -> None:
-        self.data_dir = [
-            Path(data_dir) / 'pressure_level_1.5',
-            Path(data_dir) / 'single_level_1.5',
-        ]
-        self.normalization_file = [
-            Path(data_dir) / 'climatology_1.5' / 'climatology_pressure_level_1.5_new.zarr',
-            Path(data_dir) / 'climatology_1.5' / 'climatology_single_level_1.5_new.zarr',
-        ]
-        
-        self.years = [str(year) for year in years]
-        self.n_step = n_step
-        self.lead_time = lead_time
-        self.single_vars = single_vars
-        self.pred_single_vars = pred_single_vars
-        self.pred_pressure_vars = pred_pressure_vars
+
+    def __init__(self, data_dir: str, years: List[int], n_step: int = 28,
+                 lead_time: int = 1, kernel_size: int = 4, single_vars=None,
+                 pred_single_vars=None, pred_pressure_vars=None,
+                 is_normalized: bool = True):
+        if n_step != 28:
+            raise ValueError('S2SDataset requires n_step=28 for two 14-day target means.')
+        if not isinstance(lead_time, int) or lead_time < 1:
+            raise ValueError('lead_time must be a positive integer number of days.')
+        self.n_step, self.lead_time = n_step, lead_time
+        self.years = sorted(set(str(year) for year in years))
+        self.single_vars = list(single_vars or [])
+        self.pred_single_vars = list(pred_single_vars or [])
+        self.pred_pressure_vars = list(pred_pressure_vars or [])
         self.is_normalized = is_normalized
-        
-        # Subset files that match with patterns (eg. years specified)
-        # pressure_level_files, single_level_merge_files, oras5_files = list(), list(), list()
-        pressure_level_files, single_level_merge_files = list(), list()
-        for year in self.years:
-            pattern = rf'.*{year}\d{{4}}\.zarr$'
-            
-            curr_files = [
-                list(self.data_dir[0].glob(f'*{year}*.zarr')),
-                list(self.data_dir[1].glob(f'*{year}*.zarr')),
-                # list(self.data_dir[2].glob(f'*{year}*.zarr'))
-            ]
-            
-            pressure_level_files.extend([f for f in curr_files[0] if re.match(pattern, str(f.name))])
-            single_level_merge_files.extend([f for f in curr_files[1] if re.match(pattern, str(f.name))])
-            # oras5_files.extend([f for f in curr_files[2] if re.match(pattern, str(f.name))])
-        
-        # pressure_level_files.sort(); single_level_merge_files.sort(); oras5_files.sort()
-        pressure_level_files.sort(); single_level_merge_files.sort()
-        self.file_paths = [pressure_level_files, single_level_merge_files]
-        
-        # Subsetting
-        single_level_merge_idx = [idx for idx, param in enumerate(config.SINGLE_LEVEL_PARAMS) if param in self.single_vars]
-        # oras5_idx = [idx for idx, param in enumerate(config.ORAS5_PARAMS) if param in self.ocean_vars]
-        
-        # Retrieve climatology (i.e., mean and sigma) to normalize
-        self.mean_pressure_level = xr.open_dataset(self.normalization_file[0], engine='zarr')['mean'].values[:, np.newaxis, np.newaxis]
-        self.mean_single_level_merge = xr.open_dataset(self.normalization_file[1], engine='zarr')['mean'].sel(param=self.single_vars).values[:, np.newaxis, np.newaxis]
-        self.mean_pressure_level_pred = xr.open_dataset(self.normalization_file[0], engine='zarr')['mean'].sel(param=[f"{param}-{level}" for param in self.pred_pressure_vars for level in config.PRESSURE_LEVELS]).values[:, np.newaxis, np.newaxis]
-        self.mean_single_level_merge_pred = xr.open_dataset(self.normalization_file[1], engine='zarr')['mean'].sel(param=self.pred_single_vars).values[:, np.newaxis, np.newaxis]
-        # self.mean_oras5 = xr.open_dataset(self.normalization_file[2], engine='zarr')['mean'].values[oras5_idx, np.newaxis, np.newaxis]
-        
-        self.sigma_pressure_level = xr.open_dataset(self.normalization_file[0], engine='zarr')['sigma'].values[:, np.newaxis, np.newaxis]
-        self.sigma_single_level_merge = xr.open_dataset(self.normalization_file[1], engine='zarr')['sigma'].sel(param=self.single_vars).values[:, np.newaxis, np.newaxis]
-        self.sigma_pressure_level_pred = xr.open_dataset(self.normalization_file[0], engine='zarr')['sigma'].sel(param=[f"{param}-{level}" for param in self.pred_pressure_vars for level in config.PRESSURE_LEVELS]).values[:, np.newaxis, np.newaxis]
-        self.sigma_single_level_merge_pred = xr.open_dataset(self.normalization_file[1], engine='zarr')['sigma'].sel(param=self.pred_single_vars).values[:, np.newaxis, np.newaxis]
-        # self.sigma_oras5 = xr.open_dataset(self.normalization_file[2], engine='zarr')['sigma'].values[oras5_idx, np.newaxis, np.newaxis]
-        
+        if not self.years:
+            raise ValueError('At least one dataset year is required.')
+        if not self.pred_pressure_vars and not self.pred_single_vars:
+            raise ValueError('At least one target variable is required.')
+        root = Path(data_dir).expanduser()
+        self.data_dir = [root / 'pressure_level_1.5', root / 'single_level_1.5']
+        self.normalization_file = [
+            root / 'climatology_1.5' / 'climatology_pressure_level_1.5_new.zarr',
+            root / 'climatology_1.5' / 'climatology_single_level_1.5_new.zarr',
+        ]
+
+        def dated_files(directory):
+            by_date = {}
+            for path in directory.glob('*.zarr'):
+                match = re.search(r'(\d{8})\.zarr$', path.name)
+                if not match or match.group(1)[:4] not in self.years:
+                    continue
+                date = np.datetime64(datetime.strptime(match.group(1), '%Y%m%d'), 'D')
+                if date in by_date:
+                    raise ValueError(f'Duplicate daily files for {date} in {directory}')
+                by_date[date] = path
+            missing = set(self.years) - {str(date)[:4] for date in by_date}
+            if missing:
+                raise FileNotFoundError(f'No daily data for years {sorted(missing)} in {directory}')
+            return by_date
+
+        pressure_files = dated_files(self.data_dir[0])
+        self.dates = sorted(pressure_files)
+        use_single = bool(self.single_vars or self.pred_single_vars)
+        single_files = dated_files(self.data_dir[1]) if use_single else {}
+        if use_single and set(pressure_files) != set(single_files):
+            raise ValueError('Pressure and single-level daily dates do not match.')
+        for first, second in zip(self.dates, self.dates[1:]):
+            if second - first != np.timedelta64(1, 'D'):
+                raise ValueError(f'Daily data are not contiguous: gap between {first} and {second}.')
+        self.file_paths = [[pressure_files[date] for date in self.dates],
+                           [single_files[date] for date in self.dates] if use_single else []]
+        self.data_length = len(self.dates) - lead_time - n_step + 1
+        if self.data_length <= 0:
+            raise ValueError(f'Need at least {lead_time + n_step} contiguous days; found {len(self.dates)}.')
+
+        self.statistics = {}
+        if is_normalized:
+            selections = {
+                'pressure': (0, [f'{var}-{level}' for var in config.ERA5_PRESSURE_LIST
+                                 for level in config.PRESSURE_LEVELS]),
+                'pressure_pred': (0, [f'{var}-{level}' for var in self.pred_pressure_vars
+                                      for level in config.PRESSURE_LEVELS]),
+                'single': (1, self.single_vars), 'single_pred': (1, self.pred_single_vars),
+            }
+            for name, (source, params) in selections.items():
+                if not params:
+                    continue
+                with xr.open_dataset(self.normalization_file[source], engine='zarr') as ds:
+                    mean = ds['mean'].sel(param=params).values[:, None, None]
+                    sigma = ds['sigma'].sel(param=params).values[:, None, None]
+                if not np.isfinite(mean).all() or not np.isfinite(sigma).all() or (sigma <= 0).any():
+                    raise ValueError(f'Invalid mean/sigma statistics in {self.normalization_file[source]}')
+                self.statistics[name] = (mean, sigma)
 
     def __len__(self):
-        data_length = len(self.file_paths[0]) - self.n_step - self.lead_time
-        return data_length
+        return self.data_length
+
+    def _read(self, file_idx, variables, pressure):
+        source = 0 if pressure else 1
+        with xr.open_dataset(self.file_paths[source][file_idx], engine='zarr') as ds:
+            time = np.asarray(ds.time.values).reshape(-1)
+            if time.size != 1 or np.datetime64(time[0], 'D') != self.dates[file_idx]:
+                raise ValueError(f'File date/time mismatch in {self.file_paths[source][file_idx]}')
+            selected = ds[variables]
+            if 'time' in selected.dims:
+                selected = selected.isel(time=0, drop=True)
+            selected = selected.rename({dim: {'lat': 'latitude', 'lon': 'longitude'}[dim]
+                                        for dim in ('lat', 'lon') if dim in selected.dims})
+            if pressure:
+                selected = selected.sel(level=config.PRESSURE_LEVELS)
+                array = selected.to_array().transpose('variable', 'level', 'latitude', 'longitude').values
+                array = array.reshape(-1, *array.shape[-2:])
+            else:
+                array = selected.to_array().transpose('variable', 'latitude', 'longitude').values
+            return array
+
+    def _fields(self, file_idx, target=False):
+        parts = []
+        for variables, pressure, name in (
+            (self.pred_pressure_vars if target else config.ERA5_PRESSURE_LIST,
+             True, 'pressure_pred' if target else 'pressure'),
+            (self.pred_single_vars if target else self.single_vars,
+             False, 'single_pred' if target else 'single'),
+        ):
+            if not variables:
+                continue
+            values = self._read(file_idx, variables, pressure)
+            if self.is_normalized:
+                mean, sigma = self.statistics[name]
+                values = (values - mean) / sigma
+            parts.append(torch.from_numpy(np.asarray(values, dtype=np.float32)))
+        return torch.cat(parts, dim=0)
 
     def __getitem__(self, idx):
-        pred_indices =  [target_idx for target_idx in range(idx + self.lead_time, idx + self.lead_time + self.n_step)]
-        [idx] 
-        # pressure_level_data, single_level_merge_data, oras5_data = list(), list(), list()
-        pressure_level_data, single_level_merge_data = list(), list()
-        pressure_level_data_pred, single_level_merge_data_pred = list(), list()
-
-        # Select specific pressure levels to avoid zarr chunk issues
-        ds = xr.open_dataset(self.file_paths[0][idx], engine='zarr')
-        pressure_level_data.append(ds[config.ERA5_PRESSURE_LIST].sel(
-            level=config.PRESSURE_LEVELS).to_array().values)
-        
-        # Process single_level_merge
-        if len(self.single_vars) > 0:
-            single_level_merge_data.append(xr.open_dataset(self.file_paths[1][idx], engine='zarr')[self.single_vars].to_array().values)
-
-        for step_idx in pred_indices:
-            
-            # # Process pressure_level
-            ds_pred = xr.open_dataset(self.file_paths[0][step_idx], engine='zarr')
-            pressure_level_data_pred.append(ds_pred[self.pred_pressure_vars].sel(
-                level=config.PRESSURE_LEVELS).to_array().values)
-            
-            # Process single_level_merge
-            if len(self.single_vars) > 0:
-                single_level_merge_data_pred.append(xr.open_dataset(self.file_paths[1][step_idx], engine='zarr')[self.pred_single_vars].to_array().values)
-            
-            # Process oras5
-            # if len(self.ocean_vars) > 0:
-            #     oras5_data.append(xr.open_dataset(self.file_paths[2][step_idx], engine='zarr')[self.ocean_vars].to_array().values)
-        
-        # Permutation / reshaping
-        pressure_level_data, single_level_merge_data = np.array(pressure_level_data), np.array(single_level_merge_data)
-        pressure_level_data = pressure_level_data.reshape(pressure_level_data.shape[0], -1, pressure_level_data.shape[-2], pressure_level_data.shape[-1]) # Merge (param, level) dims
-
-        pressure_level_data_pred, single_level_merge_data_pred = np.array(pressure_level_data_pred), np.array(single_level_merge_data_pred)
-        pressure_level_data_pred = pressure_level_data_pred.reshape(pressure_level_data_pred.shape[0], -1, pressure_level_data_pred.shape[-2], pressure_level_data_pred.shape[-1]) # Merge (param, level) dims
-        # Normalize
-        if self.is_normalized:
-            pressure_level_data = (pressure_level_data - self.mean_pressure_level[np.newaxis, :, :, :]) / self.sigma_pressure_level[np.newaxis, :, :, :]
-            single_level_merge_data = (single_level_merge_data - self.mean_single_level_merge[np.newaxis, :, :, :]) / self.sigma_single_level_merge[np.newaxis, :, :, :]
-            pressure_level_data_pred = (pressure_level_data_pred - self.mean_pressure_level_pred[np.newaxis, :, :, :]) / self.sigma_pressure_level_pred[np.newaxis, :, :, :]
-            single_level_merge_data_pred = (single_level_merge_data_pred - self.mean_single_level_merge_pred[np.newaxis, :, :, :]) / self.sigma_single_level_merge_pred[np.newaxis, :, :, :]
-        
-        # Concatenate along parameter dimension, only if they are specified (i.e., non-empty)
-        input_data = [t for t in [torch.tensor(pressure_level_data), torch.tensor(single_level_merge_data)] if t.nelement() > 0]
-        input_data = torch.cat(input_data, dim=1)
-
-        output_data = [t for t in [torch.tensor(pressure_level_data_pred), torch.tensor(single_level_merge_data_pred)] if t.nelement() > 0]
-        output_data = torch.cat(output_data, dim=1)
-
-        timestamp = xr.open_dataset(self.file_paths[0][idx], engine='zarr').time.values.item()
-        x, y = input_data[0].float(), torch.stack([torch.mean(output_data[0:14].float(),dim=0), torch.mean(output_data[14:28].float(),dim=0)],dim=0)
+        if idx < 0:
+            idx += len(self)
+        if not 0 <= idx < len(self):
+            raise IndexError(idx)
+        x = self._fields(idx)
+        daily_targets = torch.stack([
+            self._fields(target_idx, target=True)
+            for target_idx in range(idx + self.lead_time, idx + self.lead_time + self.n_step)
+        ])
+        y = torch.stack((daily_targets[:14].mean(dim=0), daily_targets[14:28].mean(dim=0)))
+        timestamp = int(self.dates[idx].astype('datetime64[ns]').astype(np.int64))
         return timestamp, x, y
-
-
-class S2SGraphDataset(Dataset):
-    """
-    Graph dataset for EGNN model - consistent with EIMP implementation
-    """
-    
-    def __init__(
-        self, 
-        data_dir: str,
-        years: List[int],
-        n_step: int = 1,
-        lead_time: int = 1,
-        kernel_size: int = 4,
-        single_vars: List[str] = [],
-        pred_single_vars: List[str] = [],
-        pred_pressure_vars: List[str] = [],
-        is_normalized: bool = True,
-    ) -> None:
-        self.num_nodes = 121*240
-        self.edge_index, self.edge_feat, self.radial = self._create_edges(121, 240, kernel_size)
-        self.coord = self._create_coord()
-        
-        self.data_dir = [
-            Path(data_dir) / 'pressure_level_1.5',
-            Path(data_dir) / 'single_level_1.5',
-        ]
-        self.normalization_file = [
-            Path(data_dir) / 'climatology_1.5' / 'climatology_pressure_level_1.5_new.zarr',
-            Path(data_dir) / 'climatology_1.5' / 'climatology_single_level_1.5_new.zarr',
-        ]
-        
-        self.years = [str(year) for year in years]
-        self.n_step = n_step
-        self.lead_time = lead_time
-        self.single_vars = single_vars
-        self.pred_single_vars = pred_single_vars
-        self.pred_pressure_vars = pred_pressure_vars
-        self.is_normalized = is_normalized
-        
-        # Subset files that match with patterns (eg. years specified)
-        pressure_level_files, single_level_merge_files = list(), list()
-        for year in self.years:
-            pattern = rf'.*{year}\d{{4}}\.zarr$'
-            
-            curr_files = [
-                list(self.data_dir[0].glob(f'*{year}*.zarr')),
-                list(self.data_dir[1].glob(f'*{year}*.zarr')),
-            ]
-            
-            pressure_level_files.extend([f for f in curr_files[0] if re.match(pattern, str(f.name))])
-            single_level_merge_files.extend([f for f in curr_files[1] if re.match(pattern, str(f.name))])
-        
-        pressure_level_files.sort(); single_level_merge_files.sort()
-        self.file_paths = [pressure_level_files, single_level_merge_files]
-        
-        # Retrieve climatology (i.e., mean and sigma) to normalize
-        self.mean_pressure_level = xr.open_dataset(self.normalization_file[0], engine='zarr')['mean'].values[:, np.newaxis, np.newaxis]
-        self.mean_single_level_merge = xr.open_dataset(self.normalization_file[1], engine='zarr')['mean'].sel(param=self.single_vars).values[:, np.newaxis, np.newaxis]
-        self.mean_pressure_level_pred = xr.open_dataset(self.normalization_file[0], engine='zarr')['mean'].sel(param=[f"{param}-{level}" for param in self.pred_pressure_vars for level in config.PRESSURE_LEVELS]).values[:, np.newaxis, np.newaxis]
-        self.mean_single_level_merge_pred = xr.open_dataset(self.normalization_file[1], engine='zarr')['mean'].sel(param=self.pred_single_vars).values[:, np.newaxis, np.newaxis]
-        
-        self.sigma_pressure_level = xr.open_dataset(self.normalization_file[0], engine='zarr')['sigma'].values[:, np.newaxis, np.newaxis]
-        self.sigma_single_level_merge = xr.open_dataset(self.normalization_file[1], engine='zarr')['sigma'].sel(param=self.single_vars).values[:, np.newaxis, np.newaxis]
-        self.sigma_pressure_level_pred = xr.open_dataset(self.normalization_file[0], engine='zarr')['sigma'].sel(param=[f"{param}-{level}" for param in self.pred_pressure_vars for level in config.PRESSURE_LEVELS]).values[:, np.newaxis, np.newaxis]
-        self.sigma_single_level_merge_pred = xr.open_dataset(self.normalization_file[1], engine='zarr')['sigma'].sel(param=self.pred_single_vars).values[:, np.newaxis, np.newaxis]
-
-    def __len__(self):
-        data_length = len(self.file_paths[0]) - self.n_step - self.lead_time
-        return data_length
-
-    def __getitem__(self, idx):
-        pred_indices =  [target_idx for target_idx in range(idx + self.lead_time, idx + self.lead_time + self.n_step)]
-        
-        pressure_level_data, single_level_merge_data = list(), list()
-        pressure_level_data_pred, single_level_merge_data_pred = list(), list()
-
-        pressure_level_data.append(xr.open_dataset(self.file_paths[0][idx], engine='zarr')[config.ERA5_PRESSURE_LIST].sel(
-            level=config.PRESSURE_LEVELS).to_array().values)
-        
-        # Process single_level_merge
-        if len(self.single_vars) > 0:
-            single_level_merge_data.append(xr.open_dataset(self.file_paths[1][idx], engine='zarr')[self.single_vars].to_array().values)
-
-        for step_idx in pred_indices:
-            # Process pressure_level
-            pressure_level_data_pred.append(xr.open_dataset(self.file_paths[0][step_idx], engine='zarr')[self.pred_pressure_vars].sel(
-                level=config.PRESSURE_LEVELS).to_array().values)
-            
-            # Process single_level_merge
-            if len(self.single_vars) > 0:
-                single_level_merge_data_pred.append(xr.open_dataset(self.file_paths[1][step_idx], engine='zarr')[self.pred_single_vars].to_array().values)
-        
-        # Permutation / reshaping
-        pressure_level_data, single_level_merge_data = np.array(pressure_level_data), np.array(single_level_merge_data)
-        pressure_level_data = pressure_level_data.reshape(pressure_level_data.shape[0], -1, pressure_level_data.shape[-2], pressure_level_data.shape[-1])
-
-        pressure_level_data_pred, single_level_merge_data_pred = np.array(pressure_level_data_pred), np.array(single_level_merge_data_pred)
-        pressure_level_data_pred = pressure_level_data_pred.reshape(pressure_level_data_pred.shape[0], -1, pressure_level_data_pred.shape[-2], pressure_level_data_pred.shape[-1])
-        
-        # Normalize
-        if self.is_normalized:
-            pressure_level_data = (pressure_level_data - self.mean_pressure_level[np.newaxis, :, :, :]) / self.sigma_pressure_level[np.newaxis, :, :, :]
-            single_level_merge_data = (single_level_merge_data - self.mean_single_level_merge[np.newaxis, :, :, :]) / self.sigma_single_level_merge[np.newaxis, :, :, :]
-            pressure_level_data_pred = (pressure_level_data_pred - self.mean_pressure_level_pred[np.newaxis, :, :, :]) / self.sigma_pressure_level_pred[np.newaxis, :, :, :]
-            single_level_merge_data_pred = (single_level_merge_data_pred - self.mean_single_level_merge_pred[np.newaxis, :, :, :]) / self.sigma_single_level_merge_pred[np.newaxis, :, :, :]
-        
-        # Concatenate along parameter dimension
-        input_data = [t for t in [torch.tensor(pressure_level_data), torch.tensor(single_level_merge_data)] if t.nelement() > 0]
-        input_data = torch.cat(input_data, dim=1)
-
-        output_data = [t for t in [torch.tensor(pressure_level_data_pred), torch.tensor(single_level_merge_data_pred)] if t.nelement() > 0]
-        output_data = torch.cat(output_data, dim=1)
-
-        timestamp = xr.open_dataset(self.file_paths[0][idx], engine='zarr').time.values.item()
-        timestamp = datetime.fromtimestamp(timestamp / 1000000000)
-        timestamp = timestamp.day
-        timestamp = torch.tensor(np.array([np.sin(2 * np.pi * timestamp), np.cos(2 * np.pi * timestamp), np.sin(2 * np.pi * timestamp / 365), np.cos(2 * np.pi * timestamp / 365)]), dtype=torch.float)
-
-        x, y = input_data[0].float(), torch.stack([torch.mean(output_data[0:14].float(), dim=0), torch.mean(output_data[14:28].float(), dim=0)], dim=0)
-        
-        # Convert to graph format
-        x = x.permute(1, 2, 0).reshape(self.num_nodes, -1)  # (num_nodes, feature)
-        y = y.permute(2, 3, 0, 1).reshape(self.num_nodes, y.shape[0], y.shape[1])  # (num_nodes, week, feature)
-        
-        # Create land mask
-        land_mask = np.ones((121, 240), dtype=np.float32)
-        mask = torch.tensor(land_mask).unsqueeze(-1)
-        
-        dataset = Data(x=x, edge_index=self.edge_index, edge_feat=self.edge_feat, radial=self.radial, y=y, coord=self.coord, mask=mask)
-        return dataset
-    
-    def _create_coord(self):
-        coord = []
-        for lat in range(121):
-            for lon in range(240):
-                coord.append((lat / 121, lon / 240))
-        coord = torch.tensor(coord, dtype=torch.float)
-        return coord
-
-    def _create_edges(self, latitude, longitude, kernel_size):
-        """Create edge connections - consistent with EIMP implementation"""
-        import math
-        print("--------creating edge--------")
-        edge = []
-        edge_feat = []
-        radial = []
-        
-        def haversine_distance(lat1, lon1, lat2, lon2):
-            lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
-            dlat = lat2 - lat1
-            dlon = lon2 - lon1
-            a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
-            distance = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-            return distance
-        
-        for lat in range(latitude):
-            for lon in range(longitude):
-                min_lat = max(0, lat - kernel_size)
-                max_lat = min(latitude - 1, lat + kernel_size)
-
-                min_lon = lon - kernel_size
-                max_lon = lon + kernel_size
-
-                for la in range(min_lat, max_lat + 1):
-                    for lo in range(min_lon, max_lon + 1):
-                        edge.append((lat, lon, la, lo % longitude))
-                        edge_feat.append([haversine_distance(lat, lon, la, lo % longitude)])
-                        radial.append([lat - la, lon - lo % longitude])
-        
-        edge_index = [(e[0] * longitude + e[1], e[2] * longitude + e[3]) for e in edge]
-        edge_index = torch.tensor(edge_index, dtype=torch.long).t()
-        edge_feat = torch.tensor(edge_feat, dtype=torch.float)
-        radial = torch.tensor(radial, dtype=torch.long)
-        
-        return edge_index, edge_feat, radial

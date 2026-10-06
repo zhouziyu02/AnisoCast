@@ -1,2 +1,2 @@
-jax[cuda11_pip]
-git+https://github.com/deepmind/graphcast.git
+# Select a matching PyTorch CUDA wheel before installing these dependencies.
+-r requirements.txt

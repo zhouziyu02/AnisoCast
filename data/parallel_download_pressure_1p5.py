@@ -12,6 +12,7 @@ import pandas as pd
 import xarray as xr
 
 import config
+from download_utils import parse_date, positive_int, skip_existing_store, validate_range
 
 import warnings
 warnings.filterwarnings("ignore", message="Engine 'cfgrib' loading failed")
@@ -33,10 +34,6 @@ def process_one_day(
     retries: int = 3,
     overwrite: bool = True,
 ):
-    from dask import config as dask_config
-
-    dask_config.set(scheduler="synchronous")
-
     global GLOBAL_DS
     ds = GLOBAL_DS
     if ds is None:
@@ -46,13 +43,19 @@ def process_one_day(
     ymd = date.strftime("%Y%m%d")
     out_path = os.path.join(out_dir, f"era5_pressure_full_1.5deg_{ymd}.zarr")
 
+    if skip_existing_store(out_path, era5_pressure_vars, date, overwrite):
+        return out_path
+
     if os.path.exists(out_path) and overwrite:
         shutil.rmtree(out_path, ignore_errors=True)
 
     last_err = None
     for attempt in range(1, retries + 1):
+        owns_output = overwrite
         try:
-            sub = ds.sel(time=date_str)[era5_pressure_vars]
+            sub = ds.sel(time=slice(date_str, date_str))[era5_pressure_vars]
+            if sub.sizes.get("time", 0) == 0:
+                raise ValueError(f"No source samples for {date_str}")
             sub = sub.sel(level=pressure_levels)
 
             # 0.25° -> 1.5°
@@ -62,15 +65,25 @@ def process_one_day(
             )
 
             sub = sub.fillna(0)
+            sub.attrs.update(missing_values="filled with zero", spatial_sampling="index stride", downsample_factor=downsample_factor)
+            for variable in sub.variables:
+                sub[variable].encoding = {}
             os.makedirs(out_dir, exist_ok=True)
-            sub.to_zarr(out_path, mode="w", consolidated=True)
+            if not overwrite:
+                os.mkdir(out_path)  # Exclusive reservation prevents concurrent overwrites.
+                owns_output = True
+            pending = sub.to_zarr(out_path, mode="w", consolidated=True, compute=False)
+            pending.compute(scheduler="synchronous")
             print(f"[OK]   {date_str} -> {out_path}")
             return out_path
 
         except Exception as e:
             last_err = e
+            if owns_output:
+                shutil.rmtree(out_path, ignore_errors=True)
             print(f"[RETRY {attempt}/{retries}] {date_str} failed: {e}")
-            sleep(1.5 * attempt)
+            if attempt < retries:
+                sleep(1.5 * attempt)
 
     raise RuntimeError(f"Failed to process {date_str}: {last_err}")
 
@@ -81,15 +94,15 @@ def parse_args():
     )
     p.add_argument("--url", type=str, default=DEFAULT_URL,
                    help="Zarr store URL on GCS (gs://...)")
-    p.add_argument("--start", type=str, default="2017-01-01",
+    p.add_argument("--start", type=parse_date, default=parse_date("1979-01-01"),
                    help="Start date (YYYY-MM-DD)")
-    p.add_argument("--end", type=str, default="2018-12-31",
+    p.add_argument("--end", type=parse_date, default=parse_date("2018-12-31"),
                    help="End date (YYYY-MM-DD) (inclusive)")
-    p.add_argument("--workers", type=int, default=128,
+    p.add_argument("--workers", type=positive_int, default=4,
                    help="Max concurrent workers (2–6 recommended; adjust for available memory)")
-    p.add_argument("--retries", type=int, default=3,
+    p.add_argument("--retries", type=positive_int, default=3,
                    help="Retries per day")
-    p.add_argument("--downsample_factor", type=int, default=6,
+    p.add_argument("--downsample_factor", type=positive_int, default=6,
                    help="Sampling stride from 0.25° to 1.5° (default: 6)")
     p.add_argument("--output_dir", type=str, default=None,
                    help='Output dir (default: f"{config.DATA_DIR}/pressure_level_1.5")')
@@ -107,6 +120,7 @@ def main():
 
     start_date = pd.to_datetime(args.start)
     end_date = pd.to_datetime(args.end)
+    validate_range(start_date, end_date)
     dates = pd.date_range(start_date, end_date, freq="D")
 
     output_dir = args.output_dir or os.path.join(config.DATA_DIR, "pressure_level_1.5")
@@ -121,7 +135,7 @@ def main():
     GLOBAL_DS = xr.open_zarr(
         args.url,
         consolidated=True,
-        chunks=None,
+        chunks="auto",
         storage_options=storage_options,
     )
 
@@ -154,6 +168,7 @@ def main():
         pass
 
     print(f"\nDone. Success: {ok}, Failed: {fail}, Output dir: {output_dir}")
+    return 1 if fail else 0
 
 
 if __name__ == "__main__":
@@ -161,4 +176,4 @@ if __name__ == "__main__":
     os.environ.setdefault("MKL_NUM_THREADS", "4")
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "4")
     os.environ.setdefault("NUMEXPR_NUM_THREADS", "4")
-    main()
+    raise SystemExit(main())

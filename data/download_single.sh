@@ -1,51 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
 
-
-
-
-# #!/usr/bin/env bash
-# set -euo pipefail
-
-# Limit thread usage to reduce resource contention
-export OMP_NUM_THREADS=4
-export MKL_NUM_THREADS=4
-export OPENBLAS_NUM_THREADS=4
-export NUMEXPR_NUM_THREADS=4
-
-mkdir -p log
-
-# Download in parallel chunks (5 years per chunk), 12 workers per chunk
-python data/parallel_download_single_1p5.py \
-  --start 1979-01-01 --end 1983-12-31 --workers 12 --anon \
-  > log/1979_1983.log 2>&1 &
-
-python data/parallel_download_single_1p5.py \
-  --start 1984-01-01 --end 1988-12-31 --workers 12 --anon \
-  > log/1984_1988.log 2>&1 &
-
-python data/parallel_download_single_1p5.py \
-  --start 1989-01-01 --end 1993-12-31 --workers 12 --anon \
-  > log/1989_1993.log 2>&1 &
-
-python data/parallel_download_single_1p5.py \
-  --start 1994-01-01 --end 1998-12-31 --workers 12 --anon \
-  > log/1994_1998.log 2>&1 &
-
-python data/parallel_download_single_1p5.py \
-  --start 1999-01-01 --end 2003-12-31 --workers 12 --anon \
-  > log/1999_2003.log 2>&1 &
-
-python data/parallel_download_single_1p5.py \
-  --start 2004-01-01 --end 2008-12-31 --workers 12 --anon \
-  > log/2004_2008.log 2>&1 &
-
-python data/parallel_download_single_1p5.py \
-  --start 2009-01-01 --end 2013-12-31 --workers 12 --anon \
-  > log/2009_2013.log 2>&1 &
-
-python data/parallel_download_single_1p5.py \
-  --start 2014-01-01 --end 2018-12-31 --workers 12 --anon \
-  > log/2014_2018.log 2>&1 &
-
-# Wait for all background tasks to complete
-wait
-echo "All 5-year chunks finished. Check logs/ for details."
+# Run one batch at a time by default; control total concurrency explicitly.
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+max_jobs="${BATCH_JOBS:-1}"
+workers="${WORKERS:-4}"
+python_bin="${PYTHON:-python}"
+[[ "$max_jobs" =~ ^[1-9][0-9]*$ && "$workers" =~ ^[1-9][0-9]*$ ]] || {
+  echo "BATCH_JOBS and WORKERS must be positive integers" >&2; exit 2;
+}
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
+log_dir="${LOG_DIR:-${script_dir}/../logs/data_single}"
+mkdir -p "$log_dir"
+pids=()
+failed=0
+for start_year in 1979 1984 1989 1994 1999 2004 2009 2014; do
+  end_year=$((start_year + 4))
+  "$python_bin" "${script_dir}/parallel_download_single_1p5.py" \
+    --start "${start_year}-01-01" --end "${end_year}-12-31" \
+    --workers "$workers" --anon > "${log_dir}/${start_year}_${end_year}.log" 2>&1 &
+  pids+=("$!")
+  if (( ${#pids[@]} >= max_jobs )); then
+    if wait "${pids[0]}"; then :; else failed=1; fi
+    pids=("${pids[@]:1}")
+  fi
+done
+for pid in "${pids[@]}"; do
+  if wait "$pid"; then :; else failed=1; fi
+done
+echo "Download batches finished; failures=${failed}; logs=${log_dir}"
+exit "$failed"
